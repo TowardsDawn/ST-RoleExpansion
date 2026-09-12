@@ -1,0 +1,11 @@
+{
+  "display_name": "角色扩展 (Role Expansion)",
+  "loading_order": 60,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "奔向新的黎明",
+  "version": "0.3.0",
+  "homePage": "",
+  "auto_update": false,
+  "minimum_client_version": "1.18.0"
+}

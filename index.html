@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+</head>
+<body>
+    <div id="ST-RoleExpansion_settings" class="inline-drawer wide100p">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>角色扩展 (Role Expansion)</b>
+            <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="roleEx-settings-panel">
+                <div class="roleEx-hint">
+                    日记与角色状态栏的统一面板。全部操作界面位于顶部工具栏的羽毛图标（下拉面板）内。
+                </div>
+                <div>
+                    <div id="roleEx-setting-open" class="menu_button roleEx-btn-sm">打开角色扩展面板</div>
+                </div>
+                <div class="roleEx-hint" id="roleEx-setting-journal-state">
+                    日记卡片：状态未知
+                </div>
+                <div class="roleEx-hint" id="roleEx-setting-patch-state">
+                    预设卡片补丁：检测中…
+                </div>
+                <label class="checkbox_label roleEx-settings-label">
+                    <input type="checkbox" id="roleEx-setting-state-enable">
+                    <span>启用角色状态栏</span>
+                </label>
+                <div>
+                    <div id="roleEx-setting-reset" class="menu_button roleEx-btn-sm">恢复默认设置</div>
+                </div>
+                <div class="roleEx-hint">
+                    提示：日记以 jsonl 形式保存在用户目录 <code>user/files/</code> 根目录下（文件名前缀 <code>RoleExpansion_journal_</code>），按会话隔离。
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

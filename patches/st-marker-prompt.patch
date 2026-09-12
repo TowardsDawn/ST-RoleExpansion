@@ -1,0 +1,267 @@
+diff --git a/public/scripts/PromptManager.js b/public/scripts/PromptManager.js
+index 20219dc45..093a45d8f 100644
+--- a/public/scripts/PromptManager.js
++++ b/public/scripts/PromptManager.js
+@@ -4,7 +4,7 @@ import { DOMPurify } from '../lib.js';
+ 
+ import { event_types, eventSource, is_send_press, main_api, substituteParams } from '../script.js';
+ import { is_group_generating } from './group-chats.js';
+-import { Message, MessageCollection, TokenHandler } from './openai.js';
++import { Message, MessageCollection, TokenHandler, getExtensionPromptSourceName, getRuntimePromptPermissions, getRuntimePromptPreviewSource } from './openai.js';
+ import { power_user } from './power-user.js';
+ import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
+ import { debounce_timeout } from './constants.js';
+@@ -470,13 +470,35 @@ class PromptManager {
+             this.clearInspectForm();
+ 
+             const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
+-            if (true === this.messages.hasItemWithIdentifier(promptID)) {
+-                const messages = this.messages.getItemByIdentifier(promptID);
+-
+-                this.loadMessagesIntoInspectForm(messages);
+-
++            const inspectable = this.messages?.getItemByIdentifier?.(promptID);
++            if (inspectable) {
++                this.loadMessagesIntoInspectForm(inspectable);
+                 this.showPopup('inspect');
++                return;
++            }
++
++            // 兜底：this.messages 只在构建过一次请求后才填充，且内容为空的条目会被跳过，
++            // 所以扩展注册的运行时提示词（marker 卡片）在刚启动/未选中内容时点不开预览。
++            // 这里按需为它们构建一份预览数据。
++            const source = getRuntimePromptPreviewSource(promptID);
++            if (!source) {
++                return;
+             }
++            const prompt = this.getPromptById(promptID);
++            const content = source();
++            const role = prompt?.role ?? 'system';
++            const previewMessage = new Message(role, content, promptID);
++            // Tokens 必须按真实正文算：内容为空就是 0，非空就是实际 token 数。
++            // 直接问 tokenizer，不走 tokenHandler.countAsync()，避免污染全局计数表。
++            const countTokens = (typeof content === 'string' && content.length > 0
++                && typeof this.tokenHandler?.countTokenAsyncFn === 'function')
++                ? this.tokenHandler.countTokenAsyncFn({ role, content }).catch(() => 0)
++                : Promise.resolve(0);
++            countTokens.then(tokens => {
++                previewMessage.tokens = Number.isFinite(tokens) ? tokens : 0;
++                this.loadMessagesIntoInspectForm(new MessageCollection(promptID, previewMessage));
++                this.showPopup('inspect');
++            });
+         };
+ 
+         // Detach selected prompt from list form and close edit form
+@@ -576,7 +598,7 @@ class PromptManager {
+             entrySourceBlock.style.display = isPulledPrompt ? '' : 'none';
+ 
+             if (isPulledPrompt) {
+-                const sourceName = this.promptSources[promptId];
++                const sourceName = this.promptSources[promptId] ?? getExtensionPromptSourceName(promptId);
+                 entrySource.textContent = sourceName;
+             }
+         };
+@@ -1088,6 +1110,10 @@ class PromptManager {
+             'worldInfoBefore',
+             'worldInfoAfter',
+         ];
++        // 扩展注册的运行时提示词卡片：与原生 marker 一样允许编辑（铅笔 + Prompt List 预览）
++        if (getExtensionPromptSourceName(prompt.identifier)) {
++            return true;
++        }
+         return forceEditPrompts.includes(prompt.identifier) || !prompt.marker;
+     }
+ 
+@@ -1108,6 +1134,10 @@ class PromptManager {
+             'chatHistory',
+             'dialogueExamples',
+         ];
++        // 扩展注册的运行时提示词卡片：可显式申请启停开关（原生 marker 默认没有开关）
++        if (getRuntimePromptPermissions(prompt.identifier)?.toggle) {
++            return !this.configuration.toggleDisabled.includes(prompt.identifier);
++        }
+         return prompt.marker && !forceTogglePrompts.includes(prompt.identifier) ? false : !this.configuration.toggleDisabled.includes(prompt.identifier);
+     }
+ 
+@@ -1389,7 +1419,7 @@ class PromptManager {
+         entrySourceBlock.style.display = isPulledPrompt ? '' : 'none';
+ 
+         if (isPulledPrompt) {
+-            const sourceName = this.promptSources[prompt.identifier];
++            const sourceName = this.promptSources[prompt.identifier] ?? getExtensionPromptSourceName(prompt.identifier);
+             entrySource.textContent = sourceName;
+         }
+ 
+diff --git a/public/scripts/openai.js b/public/scripts/openai.js
+index 97b96658e..0dbdf5a70 100644
+--- a/public/scripts/openai.js
++++ b/public/scripts/openai.js
+@@ -525,6 +525,98 @@ export let openai_settings;
+ /** @type {import('./PromptManager.js').PromptManager} */
+ export let promptManager = null;
+ 
++// ============================================================================
++// Extension-registerable runtime prompts
++// ----------------------------------------------------------------------------
++// 让扩展能以与 worldInfoAfter / charDescription 相同的方式提供提示词正文：
++// 预设里放一张 marker: true 的卡片占位，正文由扩展每次生成时提供。
++// ============================================================================
++
++/**
++ * identifier -> () => string. 扩展注册的运行时正文提供者。
++ * 同时用于把已由运行时提供正文的 identifier 排除在通用扩展 prompt 覆盖循环之外，
++ * 避免扩展 prompt 顶掉世界书/角色卡等原生内容。
++ *
++ * @type {Map<string, () => string>}
++ */
++const runtimePromptSources = new Map();
++
++/** identifier -> 展示名。给这些卡片启用「可编辑」并显示正文来源。 */
++const extensionPromptSources = new Map();
++
++/** identifier -> { edit?: boolean, toggle?: boolean } 覆盖原生 marker 的只读限制 */
++const runtimePromptPermissions = new Map();
++
++/**
++ * 注册一个运行时正文源。
++ *
++ * @param {string} identifier 提示词 identifier
++ * @param {() => string} getContent 正文提供者，每次生成时调用；返回空串则跳过该条
++ * @param {{ name?: string, edit?: boolean, toggle?: boolean }} [options]
++ *        name   卡片「正文来源」处显示的来源名，同时使该卡片可编辑（铅笔 + Prompt List）
++ *        edit   是否允许编辑（默认跟随 name 是否存在）
++ *        toggle 是否允许用卡片上的开关启停（marker 卡片默认不允许）
++ * @returns {void}
++ */
++export function registerRuntimePromptSource(identifier, getContent, options = {}) {
++    if (!identifier || typeof getContent !== 'function') return;
++    const key = String(identifier);
++    runtimePromptSources.set(key, getContent);
++    if (options.name) {
++        extensionPromptSources.set(key, String(options.name));
++    }
++    runtimePromptPermissions.set(key, {
++        edit: options.edit ?? !!options.name,
++        toggle: !!options.toggle,
++    });
++}
++
++/**
++ * 收集所有运行时正文源的正文。返回空串的会被跳过。
++ *
++ * @returns {Array<{ identifier: string, role: string, content: string }>}
++ */
++function collectRuntimePromptSources() {
++    const out = [];
++    for (const [identifier, getContent] of runtimePromptSources) {
++        try {
++            const content = getContent();
++            if (content) out.push({ identifier, role: 'system', content });
++        } catch (error) {
++            console.error(`Runtime prompt source "${identifier}" failed`, error);
++        }
++    }
++    return out;
++}
++
++/** 供 PromptManager 查询扩展注册的正文来源 */
++export function getExtensionPromptSourceName(identifier) {
++    return extensionPromptSources.get(String(identifier)) ?? null;
++}
++
++/** 供 PromptManager 查询扩展对 marker 卡片的编辑/开关授权 */
++export function getRuntimePromptPermissions(identifier) {
++    return runtimePromptPermissions.get(String(identifier)) ?? null;
++}
++
++/**
++ * 供 PromptManager 按需构建预览：返回该 identifier 的正文提供者，未注册则返回 null。
++ * this.messages 只在构建过请求后才有数据，且内容为空的条目会被跳过，
++ * 所以扩展卡片需要这个入口来即时生成 Prompt List 预览。
++ *
++ * @param {string} identifier 提示词 identifier
++ * @returns {(() => string)|null}
++ */
++export function getRuntimePromptPreviewSource(identifier) {
++    const key = String(identifier);
++    if (!runtimePromptSources.has(key)) {
++        return null;
++    }
++    // 正文原样返回：没有内容时就是空串，交给 PromptManager 走它自己的
++    // 「No Content」显示，不在这里塞占位文案（那会被 tokenizer 计入 Tokens）。
++    return runtimePromptSources.get(key);
++}
++
+ async function validateReverseProxy() {
+     if (!oai_settings.reverse_proxy) {
+         return;
+@@ -1247,6 +1339,18 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
+         await addToChatCompletion(identifier);
+     }
+ 
++    // 扩展注册的运行时正文源（marker 卡片，例如角色扩展的日记）。
++    // 原版这里只认上面那串硬编码 identifier，不补这一步，扩展卡片即使拿到了正文
++    // 也永远进不了 chatCompletion —— 表现就是「预览里能看到正文，但根本没注入」。
++    // 各种「不该注入」的情形由 addToChatCompletion 自己兜住：
++    //   - 卡片在 prompt_order 里 enabled=false → isPromptDisabledForActiveCharacter() 为真，跳过
++    //   - 卡片没被插进任何 prompt_order 块 → prompts.has() 为假，跳过
++    //   - 正文为空（没勾选日记 / 没内容）→ collectRuntimePromptSources() 不 push，跳过
++    for (const identifier of runtimePromptSources.keys()) {
++        if (chatCompletion.has(identifier)) continue;
++        await addToChatCompletion(identifier);
++    }
++
+     // Add enhance definition instruction
+     if (prompts.has('enhanceDefinitions')) await addToChatCompletion('enhanceDefinitions');
+ 
+@@ -1363,6 +1467,10 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
+ 
+     // Create entries for system prompts
+     const systemPrompts = [
++        // Prompts whose content is provided by extensions at generation time.
++        // Registered via registerRuntimePromptSource(); lets an extension own a
++        // `marker: true` prompt card (like worldInfoAfter) positioned by prompt_order.
++        ...collectRuntimePromptSources(),
+         // Ordered prompts for which a marker should exist
+         { role: 'system', content: formatWorldInfo(worldInfoBefore), identifier: 'worldInfoBefore' },
+         { role: 'system', content: formatWorldInfo(worldInfoAfter), identifier: 'worldInfoAfter' },
+@@ -1442,6 +1550,9 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
+             const prompt = extensionPrompts[key];
+             if (knownExtensionPrompts.includes(key)) continue;
+             if (!extensionPrompts[key].value) continue;
++            // 已经由运行时提供正文的 identifier（如 worldInfoAfter）不能在这里被覆盖，
++            // 否则扩展 prompt 会顶掉世界书/角色卡等原生内容。
++            if (runtimePromptSources.has(String(key).replace(/\W/g, '_'))) continue;
+             if (![extension_prompt_types.BEFORE_PROMPT, extension_prompt_types.IN_PROMPT].includes(prompt.position)) continue;
+ 
+             const hasFilter = typeof prompt.filter === 'function';
+diff --git a/public/scripts/st-context.js b/public/scripts/st-context.js
+index 01701de7b..c778bb778 100644
+--- a/public/scripts/st-context.js
++++ b/public/scripts/st-context.js
+@@ -86,7 +86,7 @@ import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
+ import { hideLoader, showLoader } from './loader.js';
+ import { loader } from './action-loader.js';
+ import { MacrosParser } from './macros.js';
+-import { getChatCompletionModel, oai_settings } from './openai.js';
++import { getChatCompletionModel, oai_settings, promptManager as promptManagerRef, registerRuntimePromptSource } from './openai.js';
+ import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
+ import { power_user, registerDebugFunction } from './power-user.js';
+ import { getPresetManager } from './preset-manager.js';
+@@ -224,6 +224,16 @@ export function getContext() {
+         POPUP_TYPE,
+         POPUP_RESULT,
+         chatCompletionSettings: oai_settings,
++        /**
++         * 提示词管理器（Chat Completion 的预设提示词/顺序都在这里）。
++         * 用 getter 包一层：promptManager 是在 setupChatCompletionPromptManager() 里
++         * 才被赋值的，直接取值会在早期拿到 null 并永久固化。
++         */
++        get promptManager() {
++            return promptManagerRef;
++        },
++        /** 让扩展注册自己的运行时提示词正文源（配合 marker: true 的提示词卡片） */
++        registerRuntimePromptSource,
+         textCompletionSettings: textgenerationwebui_settings,
+         powerUserSettings: power_user,
+         getCharacters,

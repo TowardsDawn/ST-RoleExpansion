@@ -1,0 +1,13 @@
+# 仓库内统一使用 LF：CI 在 Linux 上跑，Windows 检出后也保持一致，避免换行噪声。
+* text=auto eol=lf
+
+# 补丁文件必须逐字节原样保存，不做任何换行转换（否则 git apply 会失败）。
+patches/*.patch -text
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary

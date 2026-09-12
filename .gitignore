@@ -1,0 +1,22 @@
+# ---- 操作系统 / 编辑器 ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---- 依赖 / 构建产物（本扩展无构建步骤，纯 ESM，这里只是兜底）----
+node_modules/
+dist/
+*.log
+
+# ---- 自测临时输出 ----
+tools/*.out
+tools/.tmp*
+
+# ---- 本地实验（日记样本、私有预设等，不要进仓库）----
+*.local.*
+local/
+samples/

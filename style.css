@@ -1,0 +1,644 @@
+/* ==========================================================================
+   ST-RoleExpansion —— 角色扩展
+   全部类名以 roleEx- 前缀，避免与酒馆原生及第三方样式冲突。
+   ========================================================================== */
+
+/* --- 顶部工具栏抽屉按钮：不要占满整行 --- */
+#top-settings-holder .drawer.roleEx-top-drawer {
+    width: auto;
+    flex: 0 0 auto;
+}
+
+#top-settings-holder .drawer.roleEx-top-drawer .drawer-icon {
+    white-space: nowrap;
+}
+
+/* ==========================================================================
+   顶部工具栏图标间距（纯 CSS，不动 ST 本体）
+   ---------------------------------------------------------------------------
+   #top-settings-holder 是 flex 容器，每个入口是一个 .drawer（flex 项）。
+
+   为什么原来会「新抽屉与旁边两个挨太近」：
+     ST 的图标是 --topBarIconSize = 2em = 32px 的等宽图标（fa-fw），
+     间距**只**来自 .drawer-icon 自带的左右内边距（ST 默认 3px，左右共 6px），
+     容器本身没有 gap。于是每个入口固定 32 + 6 = 38px。
+     —— 靠 padding 撑出来的间距，在元素宽度不同时就无法均匀，插入新入口后尤其明显。
+
+   做法：图标左右内边距归零，间距完全交给容器 gap，这样每个图标中心间距
+     严格等于 (32px + --roleEx-topbar-gap)，天然平均。
+     默认 26px → 中心间距约 58px，观感与 ST 原生（38px 起）相比明显宽松。
+   想更紧/更松只改这一个变量：18px / 26px / 34px …
+   ========================================================================== */
+:root {
+    --roleEx-topbar-gap: 26px;
+}
+
+#top-settings-holder:has(.roleEx-top-drawer) {
+    gap: 0 var(--roleEx-topbar-gap);
+    padding: 0 4px;
+}
+
+/* 让每个入口的宽度只由图标本身决定，去掉叠加的左右内边距 */
+#top-settings-holder:has(.roleEx-top-drawer) > .drawer {
+    flex: 0 0 auto;
+    width: auto;
+}
+
+#top-settings-holder:has(.roleEx-top-drawer) .drawer-icon {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+/* 兜底：浏览器不支持 :has() 时，用扩展自己那个入口类来限定（行为等价） */
+@supports not selector(:has(*)) {
+    #top-settings-holder {
+        gap: 0 var(--roleEx-topbar-gap);
+        padding: 0 4px;
+    }
+
+    #top-settings-holder > .drawer {
+        flex: 0 0 auto;
+        width: auto;
+    }
+
+    #top-settings-holder .drawer-icon {
+        padding-left: 0;
+        padding-right: 0;
+    }
+}
+
+/* 真实内容容器：和 #WorldInfo 一样是 .drawer-content，挂在 #movingDivs 下 */
+#movingDivs > .drawer-content.roleEx-panel {
+    position: fixed;
+    top: var(--topBarBlockSize);
+    left: 0;
+    right: 0;
+    margin: 0 auto;
+    height: auto;
+    /* 高于 #left-nav-panel(3000) / #right-nav-panel(3000) */
+    z-index: 4000;
+    display: none;
+    flex-flow: column;
+    overflow: hidden;
+    padding: 5px;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background-color: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
+    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
+    box-shadow: 0 0 10px var(--black70a);
+}
+
+#movingDivs > .drawer-content.roleEx-panel.openDrawer {
+    display: flex;
+}
+
+/* 面板内容：宽面板下两列自适应，避免右侧留一大片空白 */
+.roleEx-scroll {
+    overflow-y: auto;
+    overflow-x: hidden;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 8px 6px 10px 6px;
+    display: grid;
+    /* auto-rows: min-content + align-items: start，避免展开后各行互相压住 */
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    grid-auto-rows: min-content;
+    gap: 8px;
+    align-content: start;
+    align-items: start;
+}
+
+.roleEx-scroll > * {
+    min-width: 0;
+    /* grid 项默认 stretch，会被拉高成整行高度；改成按内容自适应 */
+    align-self: start;
+    height: fit-content;
+}
+
+@media (max-width: 780px) {
+    .roleEx-scroll {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* --- 面板骨架 --- */
+.roleEx-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px 5px 6px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+}
+
+.roleEx-panel-title-box {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.roleEx-panel-title {
+    font-weight: bold;
+    font-size: calc(var(--mainFontSize) * 1.05);
+    white-space: nowrap;
+}
+
+.roleEx-panel-sub {
+    opacity: 0.65;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.roleEx-panel-pin,
+.roleEx-panel-close {
+    flex: 0 0 auto;
+    cursor: pointer;
+    opacity: 0.75;
+    padding: 0 3px;
+}
+
+.roleEx-panel-close:hover,
+.roleEx-panel-pin:hover {
+    opacity: 1;
+}
+
+.roleEx-panel-pin input {
+    display: none;
+}
+
+.roleEx-panel-pin label {
+    display: block;
+    cursor: pointer;
+    margin: 0;
+}
+
+.roleEx-panel-pin .roleEx-pin-on {
+    display: none;
+}
+
+.roleEx-panel-pin input:checked ~ label .roleEx-pin-on {
+    display: inline;
+}
+
+.roleEx-panel-pin input:checked ~ label .roleEx-pin-off {
+    display: none;
+}
+
+/* --- 折叠区块 --- */
+.roleEx-section {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background-color: var(--black30a);
+    overflow: hidden;
+    min-width: 0;
+}
+
+.roleEx-section-body {
+    padding: 6px 8px 10px 8px;
+    display: flex;
+    flex-flow: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* 嵌套在外层面板正文里的子区块（日记主提示词 / 状态注入提示词）：
+   去掉背景色，视觉上从属于外层，不会被误认成一块独立面板 */
+.roleEx-section-body > .roleEx-section {
+    background-color: transparent;
+}
+
+.roleEx-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.roleEx-section-header:hover {
+    background-color: var(--white30a);
+}
+
+.roleEx-section-title {
+    flex: 1 1 auto;
+    font-weight: bold;
+}
+
+.roleEx-chevron {
+    opacity: 0.7;
+}
+
+/* --- 区块内的小折叠（沿用酒馆原生 .inline-drawer 的处理逻辑） --- */
+.roleEx-fold {
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    padding-top: 4px;
+}
+
+.roleEx-fold-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+    font-weight: bold;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    padding: 2px 0;
+}
+
+.roleEx-fold-header:hover {
+    opacity: 0.85;
+}
+
+.roleEx-fold-header > span {
+    flex: 1 1 auto;
+}
+
+.roleEx-fold-header .inline-drawer-icon {
+    opacity: 0.7;
+}
+
+/* 用 margin 而不是 flex+gap 排间距：jQuery 的 slideToggle 展开后会把
+   内联 display 改成 block，用 gap 的话首次折叠后就再也回不来了。 */
+.roleEx-fold-body {
+    padding-top: 6px;
+    min-width: 0;
+}
+
+.roleEx-fold-body > * {
+    margin-bottom: 6px;
+}
+
+.roleEx-fold-body > *:last-child {
+    margin-bottom: 0;
+}
+
+/* --- 通用排列 --- */
+.roleEx-block {
+    display: flex;
+    flex-flow: column;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 6px;
+    background-color: var(--black30a);
+}
+
+.roleEx-label {
+    font-weight: bold;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    opacity: 0.9;
+}
+
+.roleEx-hint {
+    opacity: 0.7;
+    font-size: calc(var(--mainFontSize) * 0.82);
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.roleEx-hint code {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    background-color: var(--black50a);
+    padding: 0 3px;
+    border-radius: 3px;
+}
+
+.roleEx-row {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+}
+
+.roleEx-row.roleEx-gap {
+    gap: 6px;
+}
+
+.roleEx-row.roleEx-wrap {
+    flex-wrap: wrap;
+}
+
+.roleEx-row.roleEx-vcenter {
+    align-items: center;
+}
+
+.roleEx-row.roleEx-end {
+    justify-content: flex-end;
+}
+
+.roleEx-input,
+.roleEx-textarea {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.roleEx-textarea {
+    resize: vertical;
+    font-family: inherit;
+    line-height: 1.4;
+}
+
+.roleEx-num {
+    width: 72px;
+    flex: 0 0 auto;
+}
+
+.roleEx-btn,
+.roleEx-btn-sm,
+.roleEx-btn-xs {
+    flex: 0 0 auto;
+    /* 酒馆的 .menu_button 是 width: min-content，中文可在任意字符处断行，
+       会塌成一个汉字宽 → 文字竖排。这里强制按内容撑开且不换行。 */
+    width: fit-content;
+    max-width: 100%;
+    white-space: nowrap;
+    word-break: keep-all;
+    line-height: 1.25;
+}
+
+.roleEx-btn-sm {
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.roleEx-btn-xs {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    padding: 1px 5px;
+}
+
+.roleEx-btn.roleEx-busy {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.roleEx-danger {
+    color: var(--fullred, #ff5555);
+}
+
+/* --- 复选框行 --- */
+.roleEx-checkbox-row {
+    display: flex;
+    flex-flow: row;
+    align-items: flex-start;
+    gap: 7px;
+    cursor: pointer;
+    padding: 2px 0;
+}
+
+.roleEx-checkbox-row input[type="checkbox"] {
+    margin-top: 3px;
+    flex: 0 0 auto;
+    width: auto;
+}
+
+.roleEx-checkbox-text {
+    display: flex;
+    flex-flow: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.roleEx-checkbox-label {
+    font-size: calc(var(--mainFontSize) * 0.92);
+    display: block;
+    white-space: normal;
+    line-height: 1.35;
+}
+
+/* --- 酒馆「扩展」列表里的设置面板（index.html） --- */
+.roleEx-settings-panel {
+    display: flex;
+    flex-flow: column;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.roleEx-settings-panel .roleEx-hint {
+    white-space: normal;
+}
+
+.roleEx-settings-label {
+    display: flex;
+    flex-flow: row;
+    align-items: flex-start;
+    gap: 7px;
+    cursor: pointer;
+}
+
+.roleEx-settings-label input[type="checkbox"] {
+    width: auto;
+    flex: 0 0 auto;
+    margin-top: 3px;
+}
+
+.roleEx-settings-label span {
+    white-space: normal;
+    line-height: 1.35;
+}
+
+/* --- 楼层选择 --- */
+.roleEx-floors {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 4px;
+    display: flex;
+    flex-flow: column;
+    gap: 2px;
+}
+
+.roleEx-floor {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: calc(var(--mainFontSize) * 0.84);
+    border-left: 3px solid transparent;
+}
+
+.roleEx-floor:hover {
+    background-color: var(--white30a);
+}
+
+.roleEx-floor-user {
+    border-left-color: var(--SmartThemeQuoteColor, #6a9fb5);
+}
+
+.roleEx-floor-char {
+    border-left-color: var(--SmartThemeEmColor, #b56a6a);
+}
+
+.roleEx-floor-idx {
+    opacity: 0.6;
+    flex: 0 0 42px;
+}
+
+.roleEx-floor-name {
+    flex: 0 0 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: bold;
+}
+
+.roleEx-floor-text {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.8;
+}
+
+/* --- 日记列表 --- */
+.roleEx-list {
+    display: flex;
+    flex-flow: column;
+    gap: 5px;
+    max-height: 420px;
+    overflow-y: auto;
+}
+
+.roleEx-entry {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 5px 6px;
+    display: flex;
+    flex-flow: column;
+    gap: 3px;
+    background-color: var(--black30a);
+}
+
+.roleEx-entry-selected {
+    border-color: var(--SmartThemeQuoteColor, #6a9fb5);
+    box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor, #6a9fb5) inset;
+}
+
+.roleEx-entry-head {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    gap: 6px;
+}
+
+.roleEx-entry-title {
+    flex: 1 1 auto;
+    font-weight: bold;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.roleEx-entry-time {
+    opacity: 0.6;
+    font-size: calc(var(--mainFontSize) * 0.78);
+    flex: 0 0 auto;
+}
+
+.roleEx-entry-body {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.85;
+    line-height: 1.35;
+}
+
+.roleEx-entry-foot {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.roleEx-entry-actions {
+    display: flex;
+    flex-flow: row;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+/* --- 状态列表 --- */
+.roleEx-state-row {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    border-radius: 4px;
+    background-color: var(--black30a);
+    flex-wrap: wrap;
+}
+
+.roleEx-state-name {
+    flex: 0 0 110px;
+    font-weight: bold;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.roleEx-state-value {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.roleEx-state-edit {
+    flex: 1 1 90px;
+    min-width: 70px;
+}
+
+/* --- 编辑弹窗 --- */
+.roleEx-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    background-color: var(--black70a);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.roleEx-modal-inner {
+    background-color: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    padding: 10px;
+    width: min(720px, 90vw);
+    display: flex;
+    flex-flow: column;
+    gap: 6px;
+}
+
+.roleEx-modal-head {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: bold;
+    gap: 8px;
+}
+
+/* --- 窄屏 --- */
+@media (max-width: 600px) {
+    #movingDivs > .drawer-content.roleEx-panel {
+        left: 2px;
+        right: 2px;
+        width: auto !important;
+    }
+
+    .roleEx-floor-name,
+    .roleEx-state-name {
+        flex-basis: 70px;
+    }
+}

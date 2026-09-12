@@ -1,0 +1,22 @@
+{
+  "name": "st-role-expansion",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "SillyTavern 前端扩展：日记（Journal）与角色状态栏（State），带一套注册运行时提示词源的最小 ST 补丁。",
+  "license": "MIT",
+  "author": "奔向新的黎明",
+  "engines": {
+    "node": ">= 18"
+  },
+  "scripts": {
+    "test": "node tools/smoke-test.mjs",
+    "check:filename": "node tools/check-filename.mjs"
+  },
+  "keywords": [
+    "sillytavern",
+    "sillytavern-extension",
+    "journal",
+    "roleplay"
+  ]
+}

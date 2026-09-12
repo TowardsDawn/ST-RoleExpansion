@@ -1,0 +1,33 @@
+name: smoke-test
+
+# 本扩展没有构建步骤，CI 只做一件事：把离线自测跑起来。
+# 自测用最小 DOM / ST 桩加载 index.js，覆盖日记提示词拼接、状态标签解析与剥离、
+# 预设只读契约、运行时提示词源、生成通道分流、面板结构等 200 项断言。
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 自测 (node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['18.x', '20.x', '22.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: 跑离线自测
+        run: node tools/smoke-test.mjs
+
+      - name: 校验文件名工具可用
+        run: node tools/check-filename.mjs
