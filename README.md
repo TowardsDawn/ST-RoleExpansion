@@ -9,9 +9,7 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
-[![smoke-test](https://github.com/OWNER/REPO/actions/workflows/smoke-test.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/smoke-test.yml)
-
-<!-- ↑ 上面 CI 徽章里的 OWNER/REPO 请换成你的 GitHub 用户名与仓库名 -->
+[![smoke-test](https://github.com/TowardsDawn/ST-RoleExpansion/actions/workflows/smoke-test.yml/badge.svg)](https://github.com/TowardsDawn/ST-RoleExpansion/actions/workflows/smoke-test.yml)
 
 ---
 
@@ -117,7 +115,7 @@ ST 升级或重装会覆盖 `public/scripts/*.js`，**补丁需要重新应用**
 
 ```bash
 cd <ST>/data/<你的用户名>/extensions
-git clone <你的仓库地址> ST-RoleExpansion
+git clone https://github.com/TowardsDawn/ST-RoleExpansion.git ST-RoleExpansion
 ```
 
 刷新酒馆页面，在「扩展」列表里确认 **角色扩展 (Role Expansion)** 已启用。
@@ -311,33 +309,6 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 | 任何时候 | **不调用** `/api/presets/save`，不写入预设文件 |
 
 **预设完全归你管，扩展只是这张卡片的一个「内容供应商」。**
-
-<details>
-<summary><b>Token 数显示契约</b></summary>
-
-卡片的 token 数与内置卡片（`Char Description`、`Chat History`）**同源**，都来自
-`PromptManager.populateTokenCounts()` —— 它在每次构建完请求后，把 `chatCompletion` 里每条消息的
-`message.getTokens()` 写进计数表。所以：
-
-| 情形 | 卡片右侧 | Prompt List 的 Tokens |
-| --- | --- | --- |
-| 没有勾选任何日记（运行时源返回空串 → 该条不进 chatCompletion） | `-`（与内置卡片「本次未发送」一致） | `Tokens: 0`（按真实正文计数） |
-| 勾选了日记（正文进入 chatCompletion） | 实际 token 数 | `Tokens: 同一个数` |
-
-> 若这里一直是 `-` 而 `Char Description` 有数字，说明补丁少了「把运行时源 add 进 chatCompletion」
-> 那一段（见上方第 3 条）—— 正文取到了却没被送出去。
-
-预览与真实请求走的是**两条不同的路**，唯一的汇合点是同一个「正文提供者」函数：
-
-| | 走的路 | 什么时候被执行 |
-| --- | --- | --- |
-| Prompt List 里的 `Tokens` | `handleInspect` → 兜底现造 `Message` → `tokenHandler` 数这一串字符 | 你**点开卡片名**的那一刻 |
-| 真正发给模型的内容 | `collectRuntimePromptSources()` → `systemPrompts` → `addToChatCompletion()` | 每次**生成**时 |
-
-两条路都不会塞占位文案：没有内容就是空串，预览回落到 PromptManager 自己的
-`No Content`、`Tokens: 0` —— 与 `World Info (after)` 等原生 marker 卡片表现一致。
-
-</details>
 
 ### 为什么「是否注入主聊天」只有预设卡片一个开关
 
@@ -718,7 +689,7 @@ ST-RoleExpansion/
 
 ## 许可
 
-[MIT](LICENSE) © 2026 奔向新的黎明
+[MIT](LICENSE) © 2026 TowardsDawn
 
 > `patches/st-marker-prompt.patch` 是针对 SillyTavern 本体（AGPL-3.0）源码的 diff，
 > 其中含有少量上下文行。SillyTavern 本体不在本仓库内，请按其自身许可获取。
