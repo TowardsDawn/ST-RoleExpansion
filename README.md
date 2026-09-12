@@ -210,29 +210,6 @@ roleExpansion.logMarkerSupport()
 面板内是**两个可折叠区块**（日记 / 角色状态栏），各自还嵌套一个默认收起的子区块
 （「日记主提示词（可自由修改）」/「状态注入提示词」）。面板较宽时内容自动排成两列，窄屏回退单列。
 
-<details>
-<summary><b>面板的形态与优先级（实现细节）</b></summary>
-
-- 工具栏按钮按酒馆原生结构手写（`.drawer > .drawer-toggle`），插进 `#top-settings-holder`。
-- **面板本体是 `.drawer-content`，挂在 `#movingDivs`** —— 酒馆给下拉/浮动面板（Author's Note / CFG / logprobs）用的容器。
-  `#movingDivs > div { z-index: 4000 }`，天然高于 `#left-nav-panel` 与 `#right-nav-panel` 的 3000，
-  因此与角色管理面板同时打开时压在上面（会打上 `roleEx-panel-over-nav` 标记）。
-- 宽度取 `--sheldWidth`，最大高度 = 视口高 − `--topBarBlockSize` − `--bottomFormBlockSize` − 8px；
-  监听 `resize`，每次打开时重算，另带 620px 兜底值。
-- 头部有**锁定**（锁定时打开其它面板不自动关闭本面板）与关闭按钮；点空白处会关闭（未锁定时）。
-
-**为什么扩展要自己绑点击**：酒馆用的是 `$('.drawer-toggle').on('click', doNavbarIconClick)` ——
-这是**直接绑定**、没有事件委托，而扩展的抽屉是脚本运行后才插入 DOM 的，原生处理器不会认这张新抽屉。
-所以扩展在创建抽屉时自己绑一次点击，并复用 `doNavbarIconClick`（1.18 的 `getContext()` 并未导出它，
-因此同时内置了等价的开关实现），确保图标一定响应。
-
-**按钮文字竖排是怎么修掉的**：酒馆的 `.menu_button` 是 `width: min-content`，而中文可以在任意字符处断行，
-`min-content` 于是塌成**一个汉字宽**、文字逐字换行。本扩展所有 `.roleEx-btn*` 按钮都强制
-`width: fit-content` + `white-space: nowrap` + `word-break: keep-all`；设置面板里的复选框行也改成
-`flex` 布局 + `white-space: normal`，避免同类塌缩。
-
-</details>
-
 ---
 
 ## 核心机制
@@ -284,14 +261,11 @@ ST_API.registerRuntimePromptSource('roleExpansionJournal', () => 当前勾选日
    并在「正文来源」处显示扩展提供的来源名；`handleInspect` 增加兜底 —— 当该条目还不在
    `promptManager.messages` 里（刚启动、或当前没有可注入内容所以被跳过）时，
    按需调 `getRuntimePromptPreviewSource()` 现场构建一份预览，**保证 Prompt List 一定能打开**。
-   这份兜底预览会用 tokenizer 按**真实正文**算 token（空内容 = `Tokens: 0`，非空 = 实际数量），
-   不再显示 `undefined`。
+   这份兜底预览会用 tokenizer 按**真实正文**算 token（空内容 = `Tokens: 0`，非空 = 实际数量）。
 
-   > 原版 `handleInspect` 是 `if (true === this.messages.hasItemWithIdentifier(promptID)) { …showPopup('inspect'); }`，
-   > 而 `promptManager.messages` **只在构建过一次请求后才填充**，并且**内容为空的条目会被跳过**。
-   > 于是：刚启动时点任何卡片都没反应（内置的 `World Info (after)` 也一样）；
-   > 即使生成过，只要当时没有勾选任何日记（运行时源返回空串、该条被跳过），也依然点不开。
-   > 加了兜底之后，**任何时候点卡片名都能打开 Prompt List**，不需要先生成一次。
+   > 为什么要兜底：`promptManager.messages` **只在构建过一次请求后才填充**，且**内容为空的条目会被跳过**，
+   > 所以原版在刚启动、或当前没有可注入内容时点卡片名不会有反应（内置的 `World Info (after)` 也一样）。
+   > 有了这段兜底，**任何时候点卡片名都能打开 Prompt List**，不需要先生成一次。
 
 5. **`st-context.js`**：
    - 把 `registerRuntimePromptSource` 挂到 `getContext()` 上，让扩展能调用；
@@ -300,13 +274,10 @@ ST_API.registerRuntimePromptSource('roleExpansionJournal', () => 当前勾选日
      `promptManager` 在 `setupChatCompletionPromptManager()` 里才被赋值，
      直接取值会在早期拿到 `null` 并永久固化。
 
-> ⚠️ **第 5 条的第二项是必须的**。若补丁是旧版，`roleExpansion.diagnoseJournalCard()` 会返回
-> `promptManagerExposed: false / promptManagerReady: false`，面板提示「ST 补丁为旧版」。
-> 重新 `git apply` 并 `Ctrl+F5` 即可。
->
-> ⚠️ **第 3 条也是必须的（如果你升级过本插件）**。老版本补丁漏了这一步，症状很特定：
-> Prompt List 点开**能看到日记正文**，但生成时日记并没有进请求，而且这张卡片右侧一直是 `-`
-> （而 `Char Description` 这类卡片有数字）。补丁生效后会显示与 `Char Description` 同源的 token 数。
+> ⚠️ **第 3 条与第 5 条的第二项都不能漏**。少了第 3 条，卡片虽然能显示正文却注入不进去
+> （症状：Prompt List 里看得到日记，生成时却没有它，卡片右侧一直是 `-`）；
+> 少了第 5 条的第二项，扩展读不到预设，`diagnoseJournalCard()` 会返回 `promptManagerExposed: false`。
+> 两种情况都只需重新 `git apply` 并 `Ctrl+F5`。
 
 **⏱️ 时序坑（扩展侧必须做两件事）**
 
@@ -356,18 +327,15 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 > 若这里一直是 `-` 而 `Char Description` 有数字，说明补丁少了「把运行时源 add 进 chatCompletion」
 > 那一段（见上方第 3 条）—— 正文取到了却没被送出去。
 
-**为什么「占位提示词会被 Tokens 计入，却从不真正发送」**：预览和真实请求走的是**两条不同的路**，
-唯一的汇合点是同一个「正文提供者」函数。
+预览与真实请求走的是**两条不同的路**，唯一的汇合点是同一个「正文提供者」函数：
 
 | | 走的路 | 什么时候被执行 |
 | --- | --- | --- |
 | Prompt List 里的 `Tokens` | `handleInspect` → 兜底现造 `Message` → `tokenHandler` 数这一串字符 | 你**点开卡片名**的那一刻 |
 | 真正发给模型的内容 | `collectRuntimePromptSources()` → `systemPrompts` → `addToChatCompletion()` | 每次**生成**时 |
 
-旧版补丁在预览那条路上加了 `content || '(当前没有可注入的内容 …)'`：这是一段**真实字符串**，
-tokenizer 自然把它算成若干 token（所以 `Tokens` 有数），但它**从来没有进入 `prompts` 集合**，
-生成时自然不会被发送 —— 于是看起来像「占位提示词被计入了上下文」。删掉它之后，空内容就是空串：
-预览回落成 PromptManager 自己的 `No Content`、`Tokens: 0`，两条路彻底一致。
+两条路都不会塞占位文案：没有内容就是空串，预览回落到 PromptManager 自己的
+`No Content`、`Tokens: 0` —— 与 `World Info (after)` 等原生 marker 卡片表现一致。
 
 </details>
 
@@ -493,7 +461,7 @@ tokenizer 自然把它算成若干 token（所以 `Tokens` 有数），但它**�
 日记面板自上而下：**新日记**（标题输入 + 生成按钮 + 隔离开关 + 参考楼层）→ **注入设置** → **日记列表**
 → **日记主提示词**（收起）。
 
-「日记列表」折叠块内自上而下：计数/文件行 → 存储说明（不含版本号）→ 日记条目列表 → 操作按钮行。
+「日记列表」折叠块内自上而下：计数/文件行 → 存储说明 → 日记条目列表 → 操作按钮行。
 
 - 「参考聊天楼层」与「日记列表」各自是一个折叠块，用酒馆原生的 `.inline-drawer` 结构，
   折叠由 `script.js` 里 `$(document).on('click', '.inline-drawer-toggle', …)` 的**委托**处理器负责，
@@ -546,23 +514,12 @@ tokenizer 自然把它算成若干 token（所以 `Tokens` 有数），但它**�
 | 不含空白与 `- . / \` | 挡掉 HTML 属性残留、路径样式 |
 | 不在 HTML / 思维链 / 工具标签黑名单内 | 挡掉 `<div>`、`<style>`、`<thinking>`、`<analysis>`、`<tool>` 这类 |
 
-**未通过准入的标签不会从正文里删除** —— 它们原样留在消息里（旧版本会把标签连同内容一起删掉，
-表现为「回复莫名少了一段」）。被忽略的标签名会打到控制台，便于排查。
+**未通过准入的标签不会从正文里删除** —— 它们原样留在消息里，只有通过准入的标签才会被剥掉。
+被忽略的标签名会打到控制台，便于确认模型输出了什么。
 
-<details>
-<summary><b>旧状态数据的迁移</b></summary>
-
-状态存在会话元数据里，由酒馆核心负责读写，扩展只是它的一个客户端。
-
-如果你以前用过别的状态插件（或本扩展的早期版本），数据可能存在会话元数据的
-`chatMetadata.sillyTavernState` 键下。当本扩展自己的 `roleExpansion.state` 还是空的时候，
-会在**首次读取时把它迁入一次**并落 `legacyMigrated` 标记，此后不再重放 ——
-所以「清空全部」之后不会被旧数据填回来，迁移也不会反复发生。原键本身保持原样，不做删除。
-
-> 若那个旧插件仍然装着，**建议只留一个**：双方都在 `MESSAGE_RECEIVED` 里解析并剥离标签，
-> 谁先跑谁解析，后跑的那个看到的正文里已经没有标签了。
-
-</details>
+> 状态存在会话元数据的 `chatMetadata.roleExpansion.state` 里，由酒馆核心负责读写。
+> 如果你以前用过别的状态插件，数据可能存在 `chatMetadata.sillyTavernState` 键下 ——
+> 本扩展在自身状态为空时会把它**迁入一次**（仅一次；原键保留，不做删除）。
 
 ---
 
@@ -584,7 +541,6 @@ roleExpansion.diagnoseJournalCard()          // 打印卡片在每个 prompt_ord
 roleExpansion.logMarkerSupport()             // 打印「ST 补丁是否生效」，排查卡片没有开关/铅笔
 roleExpansion.probeCardControls()            // 读 DOM：那一行此刻有没有渲染出铅笔/开关（首屏问题看这个）
 roleExpansion.patchPromptManagerFirstRender()// 手动再补一次首屏渲染（幂等，只渲染不写预设）
-roleExpansion.clearLegacyJournalInjection()  // 清理旧版本残留的临时注入
 roleExpansion.openPanel()                    // 打开面板
 ```
 
@@ -623,12 +579,12 @@ Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/wo
 - **首屏时序**：模块求值即注册运行时源；注册成功后**主动补了一次列表渲染**；
   DOM 探针在列表未渲染时如实报 `false` 且不抛异常
 - **日记面板 UI**：「参考聊天楼层」「日记列表」两块都是酒馆原生 `.inline-drawer`；
-  「全选」「清空」是两个独立按钮；**主提示词编辑框确实挂在日记面板 section 内**
+  「全选」「清空」是两个独立按钮；**主提示词编辑框挂在日记面板 section 内**
 - **楼层区间选择**：区间行独立一行；空/非数字输入不动已有勾选；`1~2` 命中 `{1,2}`；
   反向 `2~1` 归一化并把结果写回输入框；越界区间提示且不改动选择
-- **面板结构**：主面板只剩「日记」「角色状态栏」两块；「状态注入提示词」子区块确实挂在状态面板内
-- **ST 补丁自身**：含「把运行时源真正 add 进 chatCompletion」的循环、含真实 token 计数、
-  不再写 `tokens = undefined`、且不含 `/api/presets/save`
+- **面板结构**：主面板为「日记」「角色状态栏」两块；「状态注入提示词」子区块挂在状态面板内
+- **ST 补丁自身**：含「把运行时源真正 add 进 chatCompletion」的循环与真实 token 计数，
+  且不含 `/api/presets/save`
 - **扩展对预设只读**：卡片不存在时不创建、不碰 `prompts`、不碰 `prompt_order`；
   刷新状态/勾选变化都不改动预设数组
 - **marker 卡片与开关**：运行时源已注册并返回正确文本；**卡片 `enabled=false` 时运行时源返回空串**；
@@ -636,12 +592,12 @@ Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/wo
 - **生成日记时不得自注入**：`ui.generatingJournal` 置位期间运行时源返回空串；
   `quiet` 类型同样不注入（保险丝），而 `swipe` / `regenerate` / `normal` 照常注入；
   点一次「生成日记」后标志位必定复位（`finally` 生效）
-- **状态模块的加固**：旧 `sillyTavernState` 只迁移一次（清空后不复活、遗留键保持原样）；
+- **状态模块**：旧 `sillyTavernState` 只迁移一次（原键保持原样）；
   标签准入（已知名称优先放行、长度按码点计、未通过的标签原样留在正文里）
 - **日记生成通道**：默认走 `generateRaw` 且**只传 `prompt` 一个参数**；
   关掉隔离后回退到 `generateQuietPrompt` 并带上 `skipWIAN: true`；
   隔离通道同样会剥离 `<thinking>` 推理块后再解析标题
-- **管理器可读性**：`getContext().promptManager` 缺失（旧版补丁）与「管理器未就绪」两种情形
+- **管理器可读性**：`getContext().promptManager` 缺失与「管理器未就绪」两种情形
   分别给出不同提示与诊断字段
 - **主面板形态**：挂到 `#movingDivs`、宽度取 `--sheldWidth`、最大高度 = 视口 − 工具栏 − 输入栏 − 8、
   与角色管理同时打开时打上 `roleEx-panel-over-nav` 标记
@@ -661,7 +617,7 @@ Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/wo
 **分两步看，别混**（这是两件不同的事）：
 
 1. **权限**：`roleExpansion.logMarkerSupport()` 或 `diagnoseJournalCard().patch`
-   → 任一为 `false` 说明补丁没生效（或补丁是旧版）。重新
+   → 任一为 `false` 说明补丁没生效。重新
    `git apply patches/st-marker-prompt.patch`，然后 **`Ctrl+F5`**（浏览器缓存了 `scripts/*.js`）。
 2. **渲染时机**：`diagnoseJournalCard().controls` 或 `probeCardControls()`
    → `patch` 全 `true` 但 `controls.edit/toggle` 为 `false`，说明是首屏渲染时机问题（补丁没问题）。
@@ -681,44 +637,20 @@ Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/wo
 <details>
 <summary><b>面板提示「ST 补丁为旧版」</b></summary>
 
-`getContext().promptManager` 不存在。旧版补丁只加了 `registerRuntimePromptSource`，
-没有把 `promptManager` 以 getter 暴露出来。重新应用补丁并 `Ctrl+F5`。
+`getContext().promptManager` 不存在，说明补丁没有完整应用 —— 缺了 `st-context.js` 里
+把 `promptManager` 以 getter 暴露出来的那一段。重新应用补丁并 `Ctrl+F5`。
 
 </details>
 
 <details>
 <summary><b>日记被写成了剧情推进 / 和主聊天最新内容互动</b></summary>
 
-原因：安静生成通道（`generateQuietPrompt`）会把**整条主聊天记录**一并送给模型，
-末尾再追加一条「写日记」指令。对倾向延续叙事的模型，它就会接着最新剧情往下写。
+如果你把「隔离生成」关掉了，就会走安静生成通道（`generateQuietPrompt`）—— 它会把
+**整条主聊天记录**一并送给模型，末尾再追加一条「写日记」指令；对倾向延续叙事的模型，
+它就会接着最新剧情往下写。
 
-0.3.0 起默认改用**隔离生成**（`generateRaw`，只发日记提示词本身）。
-确认面板「新日记」区的「隔离生成」是开着的；如果因为人设细节需要上下文而关掉了它，
-可以改用「在日记主提示词里手动补一段人设」来兼顾。
-
-</details>
-
-<details>
-<summary><b>点了「清空全部」，刷新后状态又回来了</b></summary>
-
-0.3.0 之前的老问题：迁移判据只看「本扩展这侧为空」，而清空后的结果同样是空，
-于是旧数据会在下次读取时整份复活。现在迁移只发生一次并落了 `legacyMigrated` 标记。
-
-升级后如果仍遇到，检查当前会话的 `chatMetadata`：
-
-```js
-SillyTavern.getContext().chatMetadata.roleExpansion
-```
-
-正常应能看到 `legacyMigrated: true`。
-
-</details>
-
-<details>
-<summary><b>模型回复里出现 <code>&lt;thinking&gt;</code> 被当成状态项 / 正文少了一段</b></summary>
-
-0.3.0 已修：标签准入会挡掉 HTML / 思维链 / 工具标签，并且**只剥离通过准入的标签**，
-未通过的原样留在正文里。被忽略的标签名会打到控制台。
+默认的**隔离生成**（`generateRaw`，只发日记提示词本身）不会有这个问题。
+如果因为需要人设细节而关掉了它，可以在「日记主提示词」里手动补一段人设说明来兼顾。
 
 </details>
 
