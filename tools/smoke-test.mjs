@@ -510,6 +510,8 @@ api.updatePresetCardHint();
 check('提示不再误报「没有提示词管理器」', fakeHint.textContent.includes('没有提示词管理器'), false);
 check('未注入过时提示可点卡片名查看', fakeHint.textContent.includes('点预设里卡片的名字即可查看'), true);
 check('状态显示已启用', fakeHint.textContent.includes('已启用（注入中）'), true);
+check('启用状态带 🟢 标记（换符号时记得同步 README）',
+    fakeHint.textContent.includes('🟢 已启用（注入中）'), true);
 
 // 模拟「生成过一次」：messages 里有该 identifier
 promptManager.messages = {

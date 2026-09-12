@@ -2049,7 +2049,7 @@ function updatePresetCardHint() {
     }
     // 预览列表：补丁已让 handleInspect 支持按需构建，所以这里只做信息展示
     const hasInspectable = !!pm.messages?.hasItemWithIdentifier?.(PRESET_PROMPT.ID);
-    hint.textContent = `状态：${enabled ? '● 已启用（注入中）' : '○ 已停用（不注入）'}`
+    hint.textContent = `状态：${enabled ? '🟢 已启用（注入中）' : '🔴 已停用（不注入）'}`
         + `\n预设「${preset}」· 标识 ${PRESET_PROMPT.ID} · 位置与开关都在预设 UI 里管理`
         + `\n形态：${shape}`
         + `\n${patchLine}`
