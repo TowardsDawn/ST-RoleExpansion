@@ -578,7 +578,10 @@
 }
 
 .roleEx-state-name {
-    flex: 0 0 110px;
+    /* 10.5em：中文全角字符宽度约 1em，留出「10 个字 + 半个字」的余量，
+       让第 11 个字才开始省略（旧值 110px 在默认字号下只够 6 个字）。
+       用 em 而不是 px，是为了跟随酒馆主题字号缩放。 */
+    flex: 0 0 10.5em;
     font-weight: bold;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -637,8 +640,12 @@
         width: auto !important;
     }
 
-    .roleEx-floor-name,
-    .roleEx-state-name {
+    .roleEx-floor-name {
         flex-basis: 70px;
+    }
+
+    /* 状态名在窄屏下也留够约 7 个字（主规则是 10.5em） */
+    .roleEx-state-name {
+        flex-basis: 7em;
     }
 }
