@@ -1679,6 +1679,15 @@ function iconFor(sectionRoot, iconClass) {
  * 区块内的小折叠。直接用酒馆原生的 `.inline-drawer` 结构：
  * script.js 里是 `$(document).on('click', '.inline-drawer-toggle', …)` 的委托绑定，
  * 所以后插入的节点也能折叠，动画/图标切换都是现成的。
+ *
+ * ⚠️ 初始 display 必须在这里显式写死，不能交给 CSS。
+ * 酒馆的 `.inline-drawer-content { display: none }`（style.css:5535）默认就是收起状态，
+ * 而原生处理器只会 toggle —— 它不知道初始状态，也没法替我们补上「展开」。
+ * 所以 `open: true` 时若不主动显示，就会出现「箭头朝上（展开态）但内容实际收着」，
+ * 与 `open: false` 的折叠块方向正好相反，看起来就像箭头写反了。两份状态必须一起设。
+ *
+ * 方向约定跟随酒馆原生：收起 = `down`（chevron-down）、展开 = `up`（chevron-up），
+ * 与 index.html 里那些初始 `down` + `display:none` 的折叠块一致。
  */
 function collapsible(title, { open = true } = {}) {
     const body = el('div', { class: 'inline-drawer-content roleEx-fold-body' });
@@ -1690,9 +1699,9 @@ function collapsible(title, { open = true } = {}) {
         icon,
     ]);
     const root = el('div', { class: 'inline-drawer roleEx-fold' }, [header, body]);
-    if (!open) {
-        body.style.display = 'none';
-    }
+    // 图标与内容一起定初始状态。slideToggle 展开后本来也会把它改成 block，
+    // 这里只是把「第一次点击之前」那段窗口补齐。
+    body.style.display = open ? 'block' : 'none';
     return { root, body, header };
 }
 

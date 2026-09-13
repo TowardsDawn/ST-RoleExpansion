@@ -682,6 +682,12 @@ check('折叠图标初始为 up + fa-circle-chevron-up（原生用 toggleClass �
 // ---- 角色设定三开关收在一个默认收起的折叠块里 ----
 const cardFold = registry.get('roleEx-card-fold');
 const cardFoldBody = cardFold?.children?.[1];
+// 酒馆的 .inline-drawer-content 默认 display:none，所以展开态的块必须自己写 display:block。
+// 只靠 CSS 默认的话会出现「图标朝上但内容收着」，与收起态的块方向相反，看着就像箭头写反。
+check('「参考聊天楼层」默认展开（body 显式 display:block，不靠 CSS 默认）',
+    floorsFold?.children?.[1]?.style?.display, 'block');
+check('「日记列表」默认展开（body 显式 display:block，不靠 CSS 默认）',
+    journalFold?.children?.[1]?.style?.display, 'block');
 check('「角色设定（隔离通道）」也是 .inline-drawer', String(cardFold?.className).includes('inline-drawer'), true);
 check('角色设定折叠的标题文案', cardFold?.children?.[0]?.children?.[0]?.textContent, '角色设定（隔离通道）');
 check('角色设定的折叠图标初始为 down（收起态，与「参考聊天楼层」相反）',
