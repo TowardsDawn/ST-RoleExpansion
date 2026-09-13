@@ -696,6 +696,19 @@ check('角色设定折叠默认收起（body 被设成 display:none）', cardFol
 check('角色设定折叠体内有三个开关行',
     (cardFoldBody?.children || []).filter(c => String(c?.className).includes('roleEx-checkbox-row')).length, 3);
 
+// ---- 外层 section 与内层 collapsible 必须用同一套箭头语义（收起 down / 展开 up） ----
+const journalSectionEl = registry.get('roleEx-journal-section');
+const journalSectionHead = journalSectionEl?.children?.[0];
+const journalChevron = journalSectionHead?.children?.find?.(c => String(c.className).includes('roleEx-chevron'));
+check('「日记」外层区块默认展开', journalSectionEl?.children?.[1]?.style?.display, 'block');
+check('外层区块展开时箭头是 up（不再用 right / 展开朝下那套）',
+    String(journalChevron?.className).includes('fa-circle-chevron-up'), true);
+journalSectionHead?.click();
+check('外层区块收起后箭头变 down', String(journalChevron?.className).includes('fa-circle-chevron-down'), true);
+check('外层区块收起后正文 display:none', journalSectionEl?.children?.[1]?.style?.display, 'none');
+journalSectionHead?.click();
+check('再次点击恢复展开（还原现场）', journalSectionEl?.children?.[1]?.style?.display, 'block');
+
 // ---- 日记面板：「全选」「清空」是两个独立按钮（不再合并成一个会变文案的按钮） ----
 const selectAllBtn = registry.get('roleEx-select-all');
 const clearAllBtn = registry.get('roleEx-clear-all');

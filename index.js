@@ -1649,9 +1649,18 @@ function q(selector, root = document) {
     return root.querySelector(selector);
 }
 
+/**
+ * 面板顶层的大折叠区块（日记 / 角色状态栏 / 各提示词区）。
+ *
+ * ⚠️ 箭头方向必须与内层 collapsible()、以及酒馆原生折叠块保持一致：
+ *   收起 = down（chevron-down）、展开 = up（chevron-up）。
+ * 这里**不能**用 right / 展开朝下那套更常见的约定 —— 内层 collapsible() 走的是
+ * 酒馆 `.inline-drawer` 的原生委托处理器，那个处理器写死 `toggleClass('down up')`，
+ * 不认 right；两套语义并存的话，同一个 ↓ 图标会一会儿表示展开、一会儿表示收起。
+ */
 function section(title, { open = false } = {}) {
     const content = el('div', { class: 'roleEx-section-body' });
-    const icon = el('div', { class: `fa-solid fa-circle-chevron-${open ? 'down' : 'right'} inline-drawer-icon roleEx-chevron` });
+    const icon = el('div', { class: `fa-solid fa-circle-chevron-${open ? 'up' : 'down'} inline-drawer-icon roleEx-chevron` });
     const header = el('div', { class: 'roleEx-section-header' }, [
         el('i', { class: 'fa-solid fa-fw roleEx-section-icon' }),
         el('span', { class: 'roleEx-section-title', text: title }),
@@ -1660,7 +1669,7 @@ function section(title, { open = false } = {}) {
     const root = el('div', { class: 'roleEx-section' }, [header, content]);
     const setOpen = (value) => {
         root.classList.toggle('roleEx-open', value);
-        icon.className = `fa-solid fa-circle-chevron-${value ? 'down' : 'right'} inline-drawer-icon roleEx-chevron`;
+        icon.className = `fa-solid fa-circle-chevron-${value ? 'up' : 'down'} inline-drawer-icon roleEx-chevron`;
         content.style.display = value ? 'block' : 'none';
     };
     header.addEventListener('click', () => setOpen(!root.classList.contains('roleEx-open')));
