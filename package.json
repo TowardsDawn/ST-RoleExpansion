@@ -1,6 +1,6 @@
 {
   "name": "st-role-expansion",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "SillyTavern 前端扩展：日记（Journal）与角色状态栏（State），带一套注册运行时提示词源的最小 ST 补丁。",

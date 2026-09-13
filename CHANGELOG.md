@@ -5,6 +5,43 @@
 
 > `0.2.x` 及更早为本地迭代，条目依据 README 与代码整理，细节未必完整。
 
+## [0.4.0] - 2026-09-13
+
+### 新增
+
+- **隔离生成可以带入角色设定了**。此前 `generateRaw` 通道把角色卡一并挡在外面，
+  日记容易脱离人设。现在「新日记」区多了三个开关，把角色卡字段拼成一条 `system` 消息，
+  排在日记提示词之前：
+
+  | 开关 | 取角色卡的 | 默认 |
+  | --- | --- | --- |
+  | 角色描述 + 性格 | `description` → `personality` | 开 |
+  | 用户设定 | `persona` | 开 |
+  | 场景 | `scenario` | 开 |
+
+  注入顺序固定为 **角色描述 → 性格 → 用户设定 → 场景**；
+  字段为空自动跳过（不留空标题），三项全关 = 与旧版行为一致。
+  只取这四项，不带角色主提示词覆盖 / Post-History Instructions / 示例对话。
+
+### 变更
+
+- 隔离通道的 `generateRaw` 调用不再只传 `prompt`：角色设定非空时会多传一个 `systemPrompt`
+  （`generateRaw` 内部经 `createRawPrompt()` 把它 unshift 成一条 `system` 消息）。
+- **回退通道不拼角色卡**：`generateQuietPrompt` 走完整预设管线，
+  角色卡由 `charDescription` / `personaDescription` / `scenario` 卡片提供，再拼一次会重复注入。
+- 新增设置项 `journalCardProfile` / `journalCardPersona` / `journalCardScenario`，
+  以及预留的 `journalCharacterCardOverride`（非空时整体替换自动抽取的角色设定块，
+  为将来的「可编辑覆盖」留出口子；当前版本没有对应的面板 UI）。
+- 注入状态提示改用 emoji 标记（`🟢 已启用（注入中）` / `🔴 已停用（不注入）`）：
+  原来的 `●` / `○` 是几何符号，跟随主题文字色，不能直观表达开 / 关。
+
+### 测试
+
+- 离线自测断言由 200 项增至 **214 项**：角色设定拼装顺序、三个开关各自生效、
+  空字段跳过（不留空标题）、覆盖字段优先于开关、回退通道不重复注入。
+- 自测脚本在既找不到 `examples/preset.example.json` 也找不到上一级 `test.json` 时，
+  改为明确跳过示例预设检查，不再抛 `ENOENT` 中断整个测试。
+
 ## [0.3.0] - 2026-09-12
 
 ### 新增

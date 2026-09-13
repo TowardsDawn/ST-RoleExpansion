@@ -232,6 +232,14 @@ const chatMetadata = {};
 
 /** 假的提示词管理器 + 假预设设置，用于验证「预设卡片」路径 */
 const DUMMY_ID = 100001;
+/** 角色卡字段：隔离通道随日记带入的角色设定来源；测试里可整体替换 */
+let cardFields = {
+    description: '银发，惯用短刀。',
+    personality: '寡言，但护短。',
+    persona: '同行者，话痨。',
+    scenario: '雨夜的驿站。',
+};
+
 const fakeSettings = {
     preset_settings_openai: 'Default',
     prompts: [
@@ -279,6 +287,7 @@ globalThis.SillyTavern = {
         name2: '角色',
         characterId: 0,
         characters: [{ name: '角色', chat: '角色/测试会话.jsonl' }],
+        getCharacterCardFields: () => ({ ...cardFields }),
         getCurrentChatId: () => '角色/测试会话.jsonl',
         saveMetadata: () => { },
         saveSettingsDebounced: () => { },
@@ -604,35 +613,40 @@ check('addJournalEntry 采用模型给的标题', api.ui.journal[0].title, '雨�
 check('标题标签不进正文', api.ui.journal[0].content, '她说她不生气。');
 
 // ---- 示例预设（仓库里的参考预设）一致性 ----
-// 优先用仓库内自带的示例（clone 下来就能跑自测），找不到时回退到开发机上仓库上一级的 test.json
+// 优先用仓库内自带的示例（clone 下来就能跑自测），找不到时回退到开发机上仓库上一级的 test.json。
+// 两者都没有（例如在不含 examples/ 的安装副本里跑自测）时明确跳过，而不是抛 ENOENT 中断整个测试。
 const presetCandidates = [
     new URL('../examples/preset.example.json', import.meta.url),
     new URL('../../test.json', import.meta.url),
 ];
-const presetPath = fileURLToPath(presetCandidates.find(u => existsSync(u)) ?? presetCandidates[0]);
-const preset = JSON.parse(readFileSync(presetPath, 'utf8'));
-const sampleCard = (preset.prompts || []).find(p => p.identifier === 'roleExpansionJournal');
-check('示例预设：存在示例卡片', !!sampleCard, true);
-check('示例预设：卡片 system_prompt=true（Ordered Prompts 通道）', sampleCard?.system_prompt, true);
-check('示例预设：卡片 marker=true（正文由扩展运行时提供，形如 World Info (after)）', sampleCard?.marker, true);
-check('示例预设：卡片与 World Info (after) 字段完全对齐',
-    Object.keys(sampleCard).sort().join(','),
-    Object.keys((preset.prompts || []).find(p => p.identifier === 'worldInfoAfter')).sort().join(','));
-check('示例预设：卡片只保留最小字段',
-    Object.keys(sampleCard).sort().join(','), 'identifier,marker,name,system_prompt');
-check('示例预设：identifier 与插件约定一致（可被扩展接管且不会重复生成）',
-    sampleCard?.identifier === 'roleExpansionJournal', true);
-for (const block of preset.prompt_order || []) {
-    const ids = block.order.map(e => e.identifier);
-    const cardIdx = ids.indexOf('roleExpansionJournal');
-    check(`示例预设：cid ${block.character_id} 卡片恰好一条`, ids.filter(x => x === 'roleExpansionJournal').length, 1);
-    check(`示例预设：cid ${block.character_id} 卡片紧随 World Info (after) 之后`,
-        cardIdx === ids.indexOf('worldInfoAfter') + 1, true);
-    check(`示例预设：cid ${block.character_id} 卡片不再落在 charDescription 之后`,
-        cardIdx === ids.indexOf('charDescription') + 1, false);
-    check(`示例预设：cid ${block.character_id} 卡片未落在 chatHistory 之后`,
-        cardIdx === ids.indexOf('chatHistory') + 1, false);
-    check(`示例预设：cid ${block.character_id} 卡片 enabled=true`, block.order[cardIdx]?.enabled, true);
+const foundPreset = presetCandidates.find(u => existsSync(u));
+if (!foundPreset) {
+    console.log('skip  示例预设一致性检查（未找到 examples/preset.example.json 或上一级 test.json；安装副本里属正常）');
+} else {
+    const preset = JSON.parse(readFileSync(fileURLToPath(foundPreset), 'utf8'));
+    const sampleCard = (preset.prompts || []).find(p => p.identifier === 'roleExpansionJournal');
+    check('示例预设：存在示例卡片', !!sampleCard, true);
+    check('示例预设：卡片 system_prompt=true（Ordered Prompts 通道）', sampleCard?.system_prompt, true);
+    check('示例预设：卡片 marker=true（正文由扩展运行时提供，形如 World Info (after)）', sampleCard?.marker, true);
+    check('示例预设：卡片与 World Info (after) 字段完全对齐',
+        Object.keys(sampleCard).sort().join(','),
+        Object.keys((preset.prompts || []).find(p => p.identifier === 'worldInfoAfter')).sort().join(','));
+    check('示例预设：卡片只保留最小字段',
+        Object.keys(sampleCard).sort().join(','), 'identifier,marker,name,system_prompt');
+    check('示例预设：identifier 与插件约定一致（可被扩展接管且不会重复生成）',
+        sampleCard?.identifier === 'roleExpansionJournal', true);
+    for (const block of preset.prompt_order || []) {
+        const ids = block.order.map(e => e.identifier);
+        const cardIdx = ids.indexOf('roleExpansionJournal');
+        check(`示例预设：cid ${block.character_id} 卡片恰好一条`, ids.filter(x => x === 'roleExpansionJournal').length, 1);
+        check(`示例预设：cid ${block.character_id} 卡片紧随 World Info (after) 之后`,
+            cardIdx === ids.indexOf('worldInfoAfter') + 1, true);
+        check(`示例预设：cid ${block.character_id} 卡片不再落在 charDescription 之后`,
+            cardIdx === ids.indexOf('charDescription') + 1, false);
+        check(`示例预设：cid ${block.character_id} 卡片未落在 chatHistory 之后`,
+            cardIdx === ids.indexOf('chatHistory') + 1, false);
+        check(`示例预设：cid ${block.character_id} 卡片 enabled=true`, block.order[cardIdx]?.enabled, true);
+    }
 }
 
 // ---- 上传路径预校验（模拟 ST 的 validateAssetFileName：允许 '/'，但只允许 ASCII） ----
@@ -833,8 +847,100 @@ check('生成日记不产生勾选副作用（不会顺手把新日记注入主�
 check('默认走隔离通道 generateRaw', rawCalls.length, 1);
 check('隔离模式下不再调用 generateQuietPrompt', quietCalls.length, 0);
 check('交给 generateRaw 的就是渲染好的日记提示词', rawCalls[0]?.prompt, promptBefore);
-check('隔离调用只带 prompt（不带 systemPrompt / prefill 等上下文）',
+check('参数只有 prompt 与 systemPrompt（不带 prefill 等其它上下文）',
+    Object.keys(rawCalls[0] ?? {}).join(','), 'prompt,systemPrompt');
+check('角色设定按 描述 → 性格 → 用户设定 → 场景 的顺序拼装',
+    String(rawCalls[0]?.systemPrompt ?? '').match(/【(角色描述|性格|用户设定|场景)】/g)?.join(','),
+    '【角色描述】,【性格】,【用户设定】,【场景】');
+check('角色设定走 systemPrompt（不是混进日记提示词）', String(rawCalls[0]?.systemPrompt ?? '').includes('银发'), true);
+check('日记提示词本身不含角色设定', String(rawCalls[0]?.prompt ?? '').includes('银发'), false);
+
+// ============================================================================
+// 端到端①b：角色卡三开关（描述+性格 / 用户设定 / 场景）与预留覆盖字段
+// ============================================================================
+const rawSystem = () => String(rawCalls[0]?.systemPrompt ?? '');
+
+// 关掉「角色描述 + 性格」→ 这两项都不在，其它两项不受影响
+api.ui.journal = [];
+rawCalls.length = 0;
+api.settings.journalCardProfile = false;
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('关掉「角色描述 + 性格」后两者都不注入', /【角色描述】|【性格】/.test(rawSystem()), false);
+check('关掉「角色描述 + 性格」不影响用户设定与场景',
+    /【用户设定】/.test(rawSystem()) && /【场景】/.test(rawSystem()), true);
+api.settings.journalCardProfile = true;
+
+// 只留「角色描述 + 性格」
+api.ui.journal = [];
+rawCalls.length = 0;
+api.settings.journalCardPersona = false;
+api.settings.journalCardScenario = false;
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('关掉用户设定与场景后两者都不注入', /【用户设定】|【场景】/.test(rawSystem()), false);
+check('只留「角色描述 + 性格」时两者都在',
+    /【角色描述】/.test(rawSystem()) && /【性格】/.test(rawSystem()), true);
+api.settings.journalCardPersona = true;
+api.settings.journalCardScenario = true;
+
+// 三项全关 → 与旧版行为一致（完全不传 systemPrompt）
+api.ui.journal = [];
+rawCalls.length = 0;
+api.settings.journalCardProfile = false;
+api.settings.journalCardPersona = false;
+api.settings.journalCardScenario = false;
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('三项全关时不传 systemPrompt（回到旧版行为）', Object.keys(rawCalls[0] ?? {}).join(','), 'prompt');
+api.settings.journalCardProfile = true;
+api.settings.journalCardPersona = true;
+api.settings.journalCardScenario = true;
+
+// 角色卡对应字段为空 → 不产生空标题，也不传 systemPrompt
+const savedCardFields = { ...cardFields };
+cardFields = { description: '', personality: '', persona: '', scenario: '' };
+api.ui.journal = [];
+rawCalls.length = 0;
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('角色卡字段全为空时不传 systemPrompt（不留空标题）',
     Object.keys(rawCalls[0] ?? {}).join(','), 'prompt');
+cardFields = savedCardFields;
+
+// 只有一个字段有值 → 只出现那一个标题
+cardFields = { description: '', personality: '', persona: '', scenario: '雨夜的驿站。' };
+api.ui.journal = [];
+rawCalls.length = 0;
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('只有场景有值时就只输出场景标题',
+    rawSystem().match(/【(角色描述|性格|用户设定|场景)】/g)?.join(','), '【场景】');
+cardFields = savedCardFields;
+
+// 预留字段：非空时整体接管
+api.ui.journal = [];
+rawCalls.length = 0;
+api.settings.journalCharacterCardOverride = '【自定义设定】\n这是用户自己写的。';
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('journalCharacterCardOverride 非空时整体接管角色设定块',
+    rawCalls[0]?.systemPrompt, '【自定义设定】\n这是用户自己写的。');
+
+// 预留字段优先于三个开关（即使三项全关也照样注入）
+api.ui.journal = [];
+rawCalls.length = 0;
+api.settings.journalCardProfile = false;
+api.settings.journalCardPersona = false;
+api.settings.journalCardScenario = false;
+registry.get('roleEx-generate-journal')?.click();
+await new Promise(resolve => setTimeout(resolve, 300));
+check('覆盖字段优先于三个开关（全关也照样注入）',
+    rawCalls[0]?.systemPrompt, '【自定义设定】\n这是用户自己写的。');
+api.settings.journalCardProfile = true;
+api.settings.journalCardPersona = true;
+api.settings.journalCardScenario = true;
+api.settings.journalCharacterCardOverride = '';
 
 // ============================================================================
 // 端到端②：关掉隔离后回退到 quiet，并带上 skipWIAN
@@ -849,6 +955,8 @@ check('关闭隔离后回退到 quiet 通道', quietCalls.length, 1);
 check('回退时不调用 generateRaw', rawCalls.length, 0);
 check('回退时带上 skipWIAN（少让世界书参与）', quietCalls[0]?.skipWIAN, true);
 check('回退时 quietToLoud 仍为 false（结果不进主聊天）', quietCalls[0]?.quietToLoud, false);
+check('回退通道不额外拼角色卡（预设已提供，避免重复注入）',
+    /【角色描述】/.test(String(quietCalls[0]?.quietPrompt ?? '')), false);
 api.settings.journalIsolatedGeneration = true;
 
 // ============================================================================

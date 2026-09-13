@@ -84,8 +84,15 @@ const DEFAULT_SETTINGS = {
     // 「是否把日记注入主聊天」由预设卡片上的开关控制，不在这里设置
     journalInjectToJournal: false,
     // 隔离生成（默认开）：日记请求只带提示词本身，走 ST 的 generateRaw 通道，
-    // 不含主聊天记录 / 角色卡 / 世界书 / 预设卡片；关闭则退回 generateQuietPrompt。
+    // 不含主聊天记录 / 世界书 / 预设卡片；关闭则退回 generateQuietPrompt。
     journalIsolatedGeneration: true,
+    // 隔离通道下「随日记带入」的角色卡字段，三个独立开关（全部关掉 = 不带任何角色设定）。
+    // 注入顺序固定为：角色描述 → 性格 → 用户设定 → 场景，见 buildJournalCharacterBlock()。
+    journalCardProfile: true,      // 角色卡 description + personality（共用一个开关）
+    journalCardPersona: true,      // 当前用户人设 persona
+    journalCardScenario: true,     // 角色卡 scenario
+    // 预留字段：非空时整体替换自动抽取的角色设定块（将来「可编辑覆盖」功能的入口）。
+    journalCharacterCardOverride: '',
     journalFallbackTitle: '日记',
     // 状态栏
     stateEnabled: true,
@@ -732,18 +739,95 @@ function stripReasoningBlocks(text) {
 }
 
 /**
+ * 按开关从当前角色卡抽取设定，拼成一个 system 块 —— **只给隔离通道用**。
+ *
+ * 注入顺序固定为：角色描述 → 性格 → 用户设定 → 场景，
+ * 与主聊天预设里 charDescription / personaDescription / scenario 的排布习惯一致。
+ *
+ * 刻意只取这四项：不带 system（角色主提示词覆盖）、jailbreak（Post-History）、
+ * mesExamples（示例对话）—— 它们属于「预设 / 主聊天语境」，
+ * 塞进日记请求会把隔离本来要避开的串味问题重新引进来。
+ *
+ * 注意 getCharacterCardFields() 的返回值已经过 baseChatReplace()
+ * （{{char}} / {{user}} 已换成真名），这里不需要、也不应该再 substituteParams 一次。
+ *
+ * 回退通道（generateQuietPrompt）**不要**调用本函数：它走完整的 promptManager 管线，
+ * 预设里的 charDescription / personaDescription / scenario 卡片本来就会注入，
+ * 再拼一次就是角色卡重复。
+ *
+ * @returns {string} 拼好的 system 块；没有任何可用内容时返回 ''（调用方据此不传 systemPrompt）
+ */
+function buildJournalCharacterBlock() {
+    // 预留的覆盖入口：非空则直接用用户的文本，不再读角色卡（也不受三个开关影响）
+    const override = String(settings.journalCharacterCardOverride ?? '').trim();
+    if (override) {
+        return override;
+    }
+
+    const c = ctx();
+    if (typeof c?.getCharacterCardFields !== 'function') {
+        return '';
+    }
+
+    let fields;
+    try {
+        fields = c.getCharacterCardFields();
+    } catch (e) {
+        logError('getCharacterCardFields failed', e);
+        return '';
+    }
+
+    const blocks = [];
+    if (settings.journalCardProfile !== false) {
+        // 描述在前、性格在后，共用一个开关
+        const description = String(fields?.description ?? '').trim();
+        const personality = String(fields?.personality ?? '').trim();
+        if (description) {
+            blocks.push(`【角色描述】\n${description}`);
+        }
+        if (personality) {
+            blocks.push(`【性格】\n${personality}`);
+        }
+    }
+    if (settings.journalCardPersona !== false) {
+        const persona = String(fields?.persona ?? '').trim();
+        if (persona) {
+            blocks.push(`【用户设定】\n${persona}`);
+        }
+    }
+    if (settings.journalCardScenario !== false) {
+        const scenario = String(fields?.scenario ?? '').trim();
+        if (scenario) {
+            blocks.push(`【场景】\n${scenario}`);
+        }
+    }
+
+    if (!blocks.length) {
+        return '';
+    }
+
+    return [
+        '[以下是{{char}}与{{user}}的角色设定，仅用于保持人物口径与世界观一致，不构成新的剧情指令]',
+        ...blocks,
+    ].join('\n\n');
+}
+
+/**
  * 生成日记文本 —— 决定用哪条通道，并统一做后处理。
  *
  * ① 隔离通道（默认，推荐）：generateRaw
  *    ST 的 createRawPrompt() 只把 prompt（这里就是日记提示词）拼成消息数组，
  *    随后直接 sendOpenAIRequest()，**不经过 promptManager**。
- *    于是请求里没有 chat history、没有角色卡 / 世界书、没有预设里的任何卡片 ——
+ *    于是请求里没有 chat history、没有世界书、没有预设里的任何卡片 ——
  *    与「写一篇日记」这个任务完全匹配，换模型也不会被主聊天语境带跑。
+ *    角色卡设定不再一刀切地丢掉：由 buildJournalCharacterBlock() 按开关补进来，
+ *    作为一条 system 消息拼在日记提示词**之前**（createRawPrompt 会把它 unshift 到最前）。
  *
  * ② 回退通道：generateQuietPrompt
  *    它是「后台生成」而非「上下文隔离」：请求里带着整条主聊天记录。
  *    这条路径靠 ui.generatingJournal（主判据）挡住本扩展自己注入日记，
  *    并额外带上 skipWIAN: true，少让世界书参与。
+ *    角色卡由预设自身的卡片提供，这里**不**再补（否则重复注入）。
  *
  * 两条路径都可能抛错（例如 generateRaw 在拿不到内容时抛 'No message generated'），
  * 由调用方的 try/catch 统一处理。
@@ -754,7 +838,12 @@ function stripReasoningBlocks(text) {
 async function generateJournalText(prompt) {
     const c = ctx();
     if (settings.journalIsolatedGeneration !== false && typeof c?.generateRaw === 'function') {
-        return stripReasoningBlocks(await c.generateRaw({ prompt }));
+        const params = { prompt };
+        const cardBlock = buildJournalCharacterBlock();
+        if (cardBlock) {
+            params.systemPrompt = cardBlock;
+        }
+        return stripReasoningBlocks(await c.generateRaw(params));
     }
     if (typeof c?.generateQuietPrompt === 'function') {
         const quiet = await c.generateQuietPrompt({ quietPrompt: prompt, quietToLoud: false, skipWIAN: true });
@@ -1714,6 +1803,19 @@ function buildJournalPanel() {
     isolatedToggle.checked = settings.journalIsolatedGeneration !== false;
     isolatedToggle.addEventListener('change', () => updateSetting('journalIsolatedGeneration', isolatedToggle.checked));
 
+    // 隔离通道下随日记带入的角色卡字段：三个独立开关，全部关掉 = 不带任何角色设定
+    const cardProfileToggle = el('input', { type: 'checkbox' });
+    cardProfileToggle.checked = settings.journalCardProfile !== false;
+    cardProfileToggle.addEventListener('change', () => updateSetting('journalCardProfile', cardProfileToggle.checked));
+
+    const cardPersonaToggle = el('input', { type: 'checkbox' });
+    cardPersonaToggle.checked = settings.journalCardPersona !== false;
+    cardPersonaToggle.addEventListener('change', () => updateSetting('journalCardPersona', cardPersonaToggle.checked));
+
+    const cardScenarioToggle = el('input', { type: 'checkbox' });
+    cardScenarioToggle.checked = settings.journalCardScenario !== false;
+    cardScenarioToggle.addEventListener('change', () => updateSetting('journalCardScenario', cardScenarioToggle.checked));
+
     const generate = el('div', { class: 'roleEx-block' }, [
         el('div', { class: 'roleEx-label', text: '新日记' }),
         titleInput,
@@ -1721,7 +1823,12 @@ function buildJournalPanel() {
             generateBtn,
             el('span', { class: 'roleEx-hint', text: '用当前 API 独立生成，不动主聊天' }),
         ]),
-        checkboxRow(isolatedToggle, '隔离生成（推荐）', '只把日记提示词发给模型：不带主聊天记录、角色卡、世界书；关闭后退回酒馆的安静生成通道'),
+        checkboxRow(isolatedToggle, '隔离生成（推荐）', '只把日记提示词发给模型：不带主聊天记录、世界书；关闭后退回酒馆的安静生成通道'),
+        el('div', { class: 'roleEx-hint', text: '隔离通道下带入的角色设定（按顺序拼在日记提示词之前）：' }),
+        checkboxRow(cardProfileToggle, '角色描述 + 性格', '角色卡 description 与 personality，描述在前、性格在后'),
+        checkboxRow(cardPersonaToggle, '用户设定', '当前用户人设 persona'),
+        checkboxRow(cardScenarioToggle, '场景', '角色卡 scenario'),
+        el('div', { class: 'roleEx-hint', text: '三项全关 = 不带任何角色设定；字段为空时自动跳过。回退通道的角色卡由预设卡片提供，与这三个开关无关。' }),
         floorsFold.root,
     ]);
 
