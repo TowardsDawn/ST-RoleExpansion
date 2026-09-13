@@ -679,6 +679,17 @@ check('「日记列表」是 .inline-drawer', String(journalFold?.className).inc
 check('折叠图标初始为 up + fa-circle-chevron-up（原生用 toggleClass 互换）',
     String(floorsFold?.children?.[0]?.children?.find?.(c => String(c.className).includes('inline-drawer-icon'))?.className).includes('fa-circle-chevron-up'), true);
 
+// ---- 角色设定三开关收在一个默认收起的折叠块里 ----
+const cardFold = registry.get('roleEx-card-fold');
+const cardFoldBody = cardFold?.children?.[1];
+check('「角色设定（隔离通道）」也是 .inline-drawer', String(cardFold?.className).includes('inline-drawer'), true);
+check('角色设定折叠的标题文案', cardFold?.children?.[0]?.children?.[0]?.textContent, '角色设定（隔离通道）');
+check('角色设定的折叠图标初始为 down（收起态，与「参考聊天楼层」相反）',
+    String(cardFold?.children?.[0]?.children?.find?.(c => String(c.className).includes('inline-drawer-icon'))?.className).includes('fa-circle-chevron-down'), true);
+check('角色设定折叠默认收起（body 被设成 display:none）', cardFoldBody?.style?.display, 'none');
+check('角色设定折叠体内有三个开关行',
+    (cardFoldBody?.children || []).filter(c => String(c?.className).includes('roleEx-checkbox-row')).length, 3);
+
 // ---- 日记面板：「全选」「清空」是两个独立按钮（不再合并成一个会变文案的按钮） ----
 const selectAllBtn = registry.get('roleEx-select-all');
 const clearAllBtn = registry.get('roleEx-clear-all');

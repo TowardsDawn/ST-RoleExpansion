@@ -1816,6 +1816,17 @@ function buildJournalPanel() {
     cardScenarioToggle.checked = settings.journalCardScenario !== false;
     cardScenarioToggle.addEventListener('change', () => updateSetting('journalCardScenario', cardScenarioToggle.checked));
 
+    // 角色设定折叠（默认收起：三项默认全开，平时不需要动它）
+    const cardSettingsFold = collapsible('角色设定（隔离通道）', { open: false });
+    cardSettingsFold.root.setAttribute('id', 'roleEx-card-fold');
+    cardSettingsFold.body.append(
+        el('div', { class: 'roleEx-hint', text: '按顺序拼在日记提示词之前：角色描述 → 性格 → 用户设定 → 场景。字段为空时自动跳过。' }),
+        checkboxRow(cardProfileToggle, '角色描述 + 性格', '角色卡 description 与 personality，描述在前、性格在后'),
+        checkboxRow(cardPersonaToggle, '用户设定', '当前用户人设 persona'),
+        checkboxRow(cardScenarioToggle, '场景', '角色卡 scenario'),
+        el('div', { class: 'roleEx-hint', text: '三项全关 = 不带任何角色设定。回退通道的角色卡由预设卡片提供，与这三个开关无关。' }),
+    );
+
     const generate = el('div', { class: 'roleEx-block' }, [
         el('div', { class: 'roleEx-label', text: '新日记' }),
         titleInput,
@@ -1824,11 +1835,7 @@ function buildJournalPanel() {
             el('span', { class: 'roleEx-hint', text: '用当前 API 独立生成，不动主聊天' }),
         ]),
         checkboxRow(isolatedToggle, '隔离生成（推荐）', '只把日记提示词发给模型：不带主聊天记录、世界书；关闭后退回酒馆的安静生成通道'),
-        el('div', { class: 'roleEx-hint', text: '隔离通道下带入的角色设定（按顺序拼在日记提示词之前）：' }),
-        checkboxRow(cardProfileToggle, '角色描述 + 性格', '角色卡 description 与 personality，描述在前、性格在后'),
-        checkboxRow(cardPersonaToggle, '用户设定', '当前用户人设 persona'),
-        checkboxRow(cardScenarioToggle, '场景', '角色卡 scenario'),
-        el('div', { class: 'roleEx-hint', text: '三项全关 = 不带任何角色设定；字段为空时自动跳过。回退通道的角色卡由预设卡片提供，与这三个开关无关。' }),
+        cardSettingsFold.root,
         floorsFold.root,
     ]);
 
