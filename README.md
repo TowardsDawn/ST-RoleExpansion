@@ -57,6 +57,7 @@
 - [常见问题](#常见问题)
 - [已知限制](#已知限制)
 - [仓库结构](#仓库结构)
+- [开发说明](DEVELOPMENT.md)（面向开发者 / 接手的人）
 - [许可](#许可)
 
 ---
@@ -716,11 +717,12 @@ ST-RoleExpansion/
 ├── patches/
 │   └── st-marker-prompt.patch        对 ST 核心的最小补丁（运行时提示词源 + 卡片权限）
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，200 项断言）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，226 项断言）
 │   └── check-filename.mjs            文件名合规校验器
 ├── examples/
 │   └── preset.example.json           参考预设（已内置日记卡片，可直接导入酒馆）
 ├── .github/workflows/smoke-test.yml  CI：Node 18 / 20 / 22 各跑一遍自测
+├── DEVELOPMENT.md                    开发说明：架构 / 数据流 / 踩坑记录（接手开发先看这个）
 ├── CHANGELOG.md
 ├── LICENSE
 └── .editorconfig / .gitattributes / .gitignore / package.json
