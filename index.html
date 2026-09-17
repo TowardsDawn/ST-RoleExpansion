@@ -17,19 +17,26 @@
                 <div>
                     <div id="roleEx-setting-open" class="menu_button roleEx-btn-sm">打开角色扩展面板</div>
                 </div>
-                <div class="roleEx-hint" id="roleEx-setting-journal-state">
-                    日记卡片：状态未知
+                <!-- 日记卡片：状态 / 形态 / 权限 / 控件 / 预览 全部汇总到这里。
+                     正文由扩展的运行时源提供；卡片的位置与启停都在预设 UI 里管 —— 本扩展对预设只读。 -->
+                <div class="roleEx-settings-block">
+                    <div class="roleEx-label">日记卡片 · <code>roleExpansionJournal</code></div>
+                    <div class="roleEx-hint" id="roleEx-preset-card-hint">状态：检测中…</div>
+                    <div class="roleEx-row roleEx-gap roleEx-vcenter roleEx-wrap">
+                        <div id="roleEx-setting-open-preset" class="menu_button roleEx-btn-sm"
+                            title="打开「AI Response Configuration」侧栏，在那里拖动 / 开关日记卡片">打开预设面板</div>
+                        <span class="roleEx-hint">开关卡片＝启停注入；正文由扩展提供，位置与启停都在预设 UI 里管理</span>
+                    </div>
                 </div>
-                <div class="roleEx-hint" id="roleEx-setting-patch-state">
-                    预设卡片补丁：检测中…
-                </div>
-                <label class="checkbox_label roleEx-settings-label">
-                    <input type="checkbox" id="roleEx-setting-state-enable">
-                    <span>启用角色状态栏</span>
-                </label>
                 <div>
-                    <div id="roleEx-setting-reset" class="menu_button roleEx-btn-sm">恢复默认设置</div>
+                    <div id="roleEx-setting-save-defaults" class="menu_button roleEx-btn-sm"
+                        title="把当前全部设置存成新的「默认」；之后「恢复默认设置」会恢复到它">存为默认设置</div>
                 </div>
+                <div>
+                    <div id="roleEx-setting-reset" class="menu_button roleEx-btn-sm"
+                        title="恢复到当前「默认」（内置值，或你用「存为默认设置」存下的快照）">恢复默认设置</div>
+                </div>
+                <div class="roleEx-hint" id="roleEx-setting-defaults-hint"></div>
                 <div class="roleEx-hint">
                     提示：日记以 jsonl 形式保存在用户目录 <code>user/files/</code> 根目录下（文件名前缀 <code>RoleExpansion_journal_</code>），按会话隔离。
                 </div>

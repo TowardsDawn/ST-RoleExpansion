@@ -19,7 +19,8 @@
  * UI：
  *   - 顶部工具栏抽屉（World Info 与 User Settings 之间）
  *   - 打开时为主面板形态：与 World Info 同款的下拉面板，挂在 #movingDivs，
- *     宽度 --sheldWidth、顶部紧贴工具栏居中；z-index 4000 高于「角色管理」侧栏
+ *     宽度 --sheldWidth、顶部紧贴工具栏居中；z-index 3000 低于 #top-settings-holder(3005)，
+ *     所以永远处在抽屉栈最底层 —— 任何展开的顶部抽屉都会盖住本面板
  *   - 角色管理面板内提供快捷入口按钮
  */
 
@@ -263,15 +264,36 @@ function splitLines(text) {
 
 let settings = clone(DEFAULT_SETTINGS);
 
+// 「存为默认设置」把当前配置快照存进扩展设置容器的**另一个键**，不混进 settings 自身：
+// settings 会被 Object.assign 合并、被「恢复默认设置」整体替换，基准混在里面迟早互相污染。
+// 用另一个键还有个好处：清掉它（clearCustomDefaults）就等于回到出厂值，不需要额外标记位。
+const CUSTOM_DEFAULTS_KEY = `${MODULE_NAME}_defaults`;
+
+/** 用户用「存为默认设置」保存的基准；null = 用内置 DEFAULT_SETTINGS */
+let customDefaults = null;
+
+/**
+ * 当前的「默认值」= 内置默认打底 + 自定义基准覆盖。
+ * 之所以打底而不是直接用快照：新版本新增的设置键，老快照里没有，
+ * 直接返回快照会让这些新键凭空消失。
+ */
+function baselineSettings() {
+    return customDefaults
+        ? Object.assign(clone(DEFAULT_SETTINGS), clone(customDefaults))
+        : clone(DEFAULT_SETTINGS);
+}
+
 function loadSettings() {
     const c = ctx();
     const container = c?.extensionSettings;
     if (!container) {
-        settings = clone(DEFAULT_SETTINGS);
+        settings = baselineSettings();
         return settings;
     }
+    // 自定义基准必须在合并之前读出来 —— 它决定「默认值」到底是什么
+    customDefaults = container[CUSTOM_DEFAULTS_KEY] || null;
     const stored = container[MODULE_NAME];
-    settings = Object.assign(clone(DEFAULT_SETTINGS), stored || {});
+    settings = Object.assign(baselineSettings(), stored || {});
     // 顺手剔除历史版本的废弃键（否则它们会被 Object.assign 带回内存对象，并一直留在 settings.json 里）
     let droppedDeprecated = 0;
     for (const key of DEPRECATED_SETTINGS_KEYS) {
@@ -307,6 +329,55 @@ function updateSetting(key, value, { persist = true } = {}) {
         saveSettingsDebounced();
     }
     return settings[key];
+}
+
+/** 把当前配置存为「默认设置」—— 之后「恢复默认设置」会恢复到这份快照 */
+function saveAsDefaults() {
+    customDefaults = clone(settings);
+    const c = ctx();
+    if (c?.extensionSettings) {
+        c.extensionSettings[CUSTOM_DEFAULTS_KEY] = customDefaults;
+    }
+    saveSettingsDebounced();
+    updateDefaultsHint();
+    return customDefaults;
+}
+
+/** 清除自定义基准，回到扩展内置默认值（控制台出口，避免存了之后没有回头路） */
+function clearCustomDefaults() {
+    customDefaults = null;
+    const c = ctx();
+    if (c?.extensionSettings) {
+        delete c.extensionSettings[CUSTOM_DEFAULTS_KEY];
+    }
+    saveSettingsDebounced();
+    updateDefaultsHint();
+}
+
+/** 恢复到当前基准（内置默认，或用户「存为默认设置」的快照） */
+function resetToDefaults() {
+    settings = baselineSettings();
+    const c = ctx();
+    if (c?.extensionSettings) {
+        c.extensionSettings[MODULE_NAME] = settings;
+    }
+    saveSettingsDebounced();
+    applyStateInjection();
+    ensureRuntimePromptSource();
+    updatePresetCardHint();
+    updateDefaultsHint();
+    return settings;
+}
+
+/** 扩展设置面板里那行说明：当前「默认」是内置值，还是你存过的快照 */
+function updateDefaultsHint() {
+    const el = document.getElementById('roleEx-setting-defaults-hint');
+    if (!el) {
+        return;
+    }
+    el.textContent = customDefaults
+        ? '当前「默认」= 你保存的自定义基准（「恢复默认设置」恢复到它；清除：控制台执行 roleExpansion.clearCustomDefaults()）'
+        : '当前「默认」= 扩展内置值。点「存为默认设置」可把当前配置存成新的基准。';
 }
 
 // ============================================================================
@@ -1845,7 +1916,18 @@ function buildJournalPanel() {
         el('div', { class: 'roleEx-hint', text: '三项全关 = 不带任何角色设定。回退通道的角色卡由预设卡片提供，与这三个开关无关。' }),
     );
 
-    const generate = el('div', { class: 'roleEx-block' }, [
+    // ---- 提示词注入（只看状态；详情与跳转都搬到了酒馆「扩展」设置面板）----
+    const injectStatus = el('div', {
+        class: 'roleEx-hint',
+        id: 'roleEx-inject-status',
+        text: '注入状态：检测中…',
+    });
+    const injectBlock = el('div', { class: 'roleEx-block', id: 'roleEx-inject-block' }, [
+        el('div', { class: 'roleEx-label', text: '提示词注入' }),
+        injectStatus,
+    ]);
+
+    const generate = el('div', { class: 'roleEx-block', id: 'roleEx-new-journal-block' }, [
         el('div', { class: 'roleEx-label', text: '新日记' }),
         titleInput,
         el('div', { class: 'roleEx-row roleEx-gap roleEx-vcenter' }, [
@@ -1855,46 +1937,6 @@ function buildJournalPanel() {
         checkboxRow(isolatedToggle, '隔离生成（推荐）', '只把日记提示词发给模型：不带主聊天记录、世界书；关闭后退回酒馆的安静生成通道'),
         cardSettingsFold.root,
         floorsFold.root,
-    ]);
-
-    // ---- 注入设置 ----
-    // 「是否把日记插入主聊天」完全由预设里那张卡片的开关控制（与 World Info (after) 一致），
-    // 面板里只展示状态并提供跳转，不再重复控制，避免两个开关打架。
-    const injectJournalToggle = el('input', { type: 'checkbox', id: 'roleEx-inject-journal' });
-    injectJournalToggle.checked = settings.journalInjectToJournal === true;
-    injectJournalToggle.addEventListener('change', () => {
-        updateSetting('journalInjectToJournal', injectJournalToggle.checked);
-        renderJournalList();
-    });
-
-    const presetCardHint = el('div', { class: 'roleEx-hint', id: 'roleEx-preset-card-hint' });
-
-    const openPresetBtn = el('div', {
-        class: 'menu_button roleEx-btn-sm',
-        text: '打开预设面板',
-        title: '打开「AI Response Configuration」侧栏，在那里拖动/开关日记卡片',
-        onclick: () => {
-            const panel = document.getElementById('left-nav-panel');
-            if (panel?.classList.contains('openDrawer')) {
-                return;
-            }
-            const toggle = document.getElementById('ai-config-button')?.querySelector('.drawer-toggle');
-            toggle?.click();
-        },
-    });
-
-    const inject = el('div', { class: 'roleEx-block' }, [
-        el('div', { class: 'roleEx-label', text: '注入设置' }),
-        presetCardHint,
-        el('div', { class: 'roleEx-row roleEx-gap roleEx-vcenter' }, [
-            openPresetBtn,
-            el('span', { class: 'roleEx-hint', text: '开关卡片＝启停注入' }),
-        ]),
-        el('div', {
-            class: 'roleEx-hint',
-            html: '正文由扩展提供，位置与启停都在预设里管理（卡片 <code>roleExpansionJournal</code>）。',
-        }),
-        checkboxRow(injectJournalToggle, '插入日记系统', '作为「新日记」的参考提示词'),
     ]);
 
     // ---- 列表 + 工具 ----
@@ -1941,14 +1983,27 @@ function buildJournalPanel() {
             + '一篇日记一行，互不续写。',
     });
 
+    // 「插入日记系统」＝生成新日记时把已勾选的日记当参考提示词。
+    // 它与「是否把日记注入主聊天」是两件事：后者由预设里那张卡片的开关决定（见扩展设置面板）。
+    const injectJournalToggle = el('input', { type: 'checkbox', id: 'roleEx-inject-journal' });
+    injectJournalToggle.checked = settings.journalInjectToJournal === true;
+    injectJournalToggle.addEventListener('change', () => {
+        updateSetting('journalInjectToJournal', injectJournalToggle.checked);
+        renderJournalList();
+    });
+    const injectJournalRow = checkboxRow(injectJournalToggle, '插入日记系统', '作为「新日记」的参考提示词');
+    injectJournalRow.setAttribute('id', 'roleEx-inject-journal-row');
+
     // 日记列表折叠（默认展开）
     const entriesFold = collapsible('日记列表', { open: true });
     entriesFold.root.setAttribute('id', 'roleEx-journal-fold');
-    entriesFold.body.append(storageHint, storageNote, list, tools);
+    // 第一行放「插入日记系统」：它回答的正是"上面这些勾选拿来干什么"，
+    // 排在「M 篇 · N 篇已勾选」之前，读下来正好是「勾选 → 用途 → 现状」。
+    entriesFold.body.append(injectJournalRow, storageHint, storageNote, list, tools);
 
     const entries = el('div', { class: 'roleEx-block' }, [entriesFold.root]);
 
-    s.content.append(generate, inject, entries);
+    s.content.append(injectBlock, generate, entries);
 
     // 主提示词编辑器（必须挂进 s.content，否则这个区块根本不会出现在面板里）
     const mainPrompt = el('textarea', {
@@ -1961,18 +2016,11 @@ function buildJournalPanel() {
 
     const promptSection = section('日记主提示词（可自由修改）', { open: false });
     iconFor(promptSection.root, 'fa-solid fa-wand-magic-sparkles');
+    // 单项「恢复默认」已去掉：要还原主提示词，用扩展设置面板里的「恢复默认设置」
+    //（它会按 <存为默认设置> 保存的基准整体还原），避免面板里到处是"恢复默认"。
     promptSection.content.append(
         el('div', { class: 'roleEx-hint', html: '变量：<code>{{chatRange}}</code> 参考聊天、<code>{{journalRefs}}</code> 参考日记、<code>{{stateList}}</code> 状态；<code>{{char}}</code>/<code>{{user}}</code> 走酒馆宏。' }),
         mainPrompt,
-        el('div', { class: 'roleEx-row roleEx-gap' }, [
-            el('div', {
-                class: 'menu_button roleEx-btn-sm', text: '恢复默认', onclick: () => {
-                    mainPrompt.value = DEFAULT_SETTINGS.journalMainPrompt;
-                    updateSetting('journalMainPrompt', mainPrompt.value);
-                    toast('success', '已恢复默认主提示词。');
-                },
-            }),
-        ]),
     );
     s.content.append(promptSection.root);
 
@@ -2122,27 +2170,29 @@ function renderJournalStorageHint() {
     hint.style.whiteSpace = 'pre-line';
 }
 
-/** 预设卡片状态提示 */
-function updatePresetCardHint() {
-    const hint = document.getElementById('roleEx-preset-card-hint');
-    if (!hint) {
-        return;
-    }
+/**
+ * 预设卡片状态：**同一次计算出两份文案**，避免两处各算一遍、出现不一致。
+ *   - status：单行，给主面板「日记 → 提示词注入」区块
+ *   - detail：完整诊断（状态 / 形态 / 权限 / 控件 / 预览），给酒馆「扩展」设置面板里的日记卡片区块
+ */
+function describeJournalCard() {
     const pm = getPromptManager();
     // 三种「读不到管理器」要分开讲，否则无从排查：
     //   a) 补丁是旧版 → getContext() 里没有 promptManager（需要重新应用补丁）
     //   b) 当前接口不是 Chat Completion → 管理器尚未建立
     if (!isPromptManagerExposed()) {
-        hint.textContent = '状态：读取不到提示词管理器 —— ST 补丁为旧版'
-            + '（未把 promptManager 暴露到 getContext()）。'
-            + '请重新应用 patches/st-marker-prompt.patch 并 Ctrl+F5 强制刷新。';
-        hint.style.whiteSpace = 'pre-line';
-        return;
+        return {
+            status: '注入状态：⚠️ 读不到提示词管理器（补丁不完整）',
+            detail: '状态：读取不到提示词管理器 —— ST 补丁为旧版'
+                + '（未把 promptManager 暴露到 getContext()）。'
+                + '请重新应用 patches/st-marker-prompt.patch 并 Ctrl+F5 强制刷新。',
+        };
     }
     if (!pm || !pm.serviceSettings || typeof pm.getPromptById !== 'function') {
-        hint.textContent = '状态：提示词管理器尚未就绪（需要选中 Chat Completion 类接口）。';
-        hint.style.whiteSpace = 'pre-line';
-        return;
+        return {
+            status: '注入状态：⚠️ 提示词管理器未就绪（需 Chat Completion 类接口）',
+            detail: '状态：提示词管理器尚未就绪（需要选中 Chat Completion 类接口）。',
+        };
     }
     const exists = !!pm.getPromptById(PRESET_PROMPT.ID);
     const preset = currentPresetName() || '(未识别预设)';
@@ -2156,14 +2206,15 @@ function updatePresetCardHint() {
         ? 'marker=true（正文由扩展的运行时源提供）'
         : 'registerRuntimePromptSource 不存在 → 卡片拿不到正文（补丁未生效）';
     if (!exists) {
-        hint.textContent = `状态：预设「${preset}」里没有这张卡片。\n`
-            + `本扩展不再自动创建卡片 —— 请在预设 JSON 里加入下面这一条（详见 README 3.3）：\n`
-            + `  prompts:     { "identifier": "${PRESET_PROMPT.ID}", "name": "${PRESET_PROMPT.NAME}", "system_prompt": true, "marker": true }\n`
-            + `  prompt_order（每个块都要加）: { "identifier": "${PRESET_PROMPT.ID}", "enabled": true }\n`
-            + `位置建议紧跟在 "worldInfoAfter" 之后。\n`
-            + patchLine;
-        hint.style.whiteSpace = 'pre-line';
-        return;
+        return {
+            status: '注入状态：⚠️ 预设里没有这张卡片',
+            detail: `状态：预设「${preset}」里没有这张卡片。\n`
+                + `本扩展不再自动创建卡片 —— 请在预设 JSON 里加入下面这一条（详见 README 3.3）：\n`
+                + `  prompts:     { "identifier": "${PRESET_PROMPT.ID}", "name": "${PRESET_PROMPT.NAME}", "system_prompt": true, "marker": true }\n`
+                + `  prompt_order（每个块都要加）: { "identifier": "${PRESET_PROMPT.ID}", "enabled": true }\n`
+                + `位置建议紧跟在 "worldInfoAfter" 之后。\n`
+                + patchLine,
+        };
     }
     const enabled = isJournalCardEnabledInPreset();
     // 权限正确 ≠ 屏幕上这一行是用带授权的代码渲染出来的 —— 分开报告
@@ -2181,16 +2232,46 @@ function updatePresetCardHint() {
     }
     // 预览列表：补丁已让 handleInspect 支持按需构建，所以这里只做信息展示
     const hasInspectable = !!pm.messages?.hasItemWithIdentifier?.(PRESET_PROMPT.ID);
-    hint.textContent = `状态：${enabled ? '🟢 已启用（注入中）' : '🔴 已停用（不注入）'}`
-        + `\n预设「${preset}」· 标识 ${PRESET_PROMPT.ID} · 位置与开关都在预设 UI 里管理`
-        + `\n形态：${shape}`
-        + `\n${patchLine}`
-        + `\n${controlsLine}`
-        + `\n预览：${hasInspectable
-            ? '已注入过 —— 点预设里卡片的名字可查看本次内容'
-            : '点预设里卡片的名字即可查看（补丁支持即时构建预览）'}`
-        + (enabled ? '' : '\n要重新启用：在预设 UI 里打开这张卡片的开关');
-    hint.style.whiteSpace = 'pre-line';
+    return {
+        status: `注入状态：${enabled ? '🟢 已启用（注入中）' : '🔴 已停用（不注入）'}`,
+        detail: `状态：${enabled ? '🟢 已启用（注入中）' : '🔴 已停用（不注入）'}`
+            + `\n预设「${preset}」· 标识 ${PRESET_PROMPT.ID} · 位置与开关都在预设 UI 里管理`
+            + `\n形态：${shape}`
+            + `\n${patchLine}`
+            + `\n${controlsLine}`
+            + `\n预览：${hasInspectable
+                ? '已注入过 —— 点预设里卡片的名字可查看本次内容'
+                : '点预设里卡片的名字即可查看（补丁支持即时构建预览）'}`
+            + (enabled ? '' : '\n要重新启用：在预设 UI 里打开这张卡片的开关'),
+    };
+}
+
+/**
+ * 把 describeJournalCard() 的两份文案分别落地：
+ *   - 主面板「日记 → 提示词注入」区块：一行状态
+ *   - 酒馆「扩展」设置面板的日记卡片区块：完整诊断
+ * 两个元素都可能不在 DOM 里（设置面板要等 APP_READY 后由模板渲染），所以都要容错。
+ */
+function updatePresetCardHint() {
+    const { status, detail } = describeJournalCard();
+    const statusEl = document.getElementById('roleEx-inject-status');
+    if (statusEl) {
+        statusEl.textContent = status;
+    }
+    const detailEl = document.getElementById('roleEx-preset-card-hint');
+    if (detailEl) {
+        detailEl.textContent = detail;
+        detailEl.style.whiteSpace = 'pre-line';
+    }
+}
+
+/** 打开酒馆「AI Response Configuration」侧栏 —— 日记卡片的位置与启停都在那里管 */
+function openPresetPanel() {
+    const panel = document.getElementById('left-nav-panel');
+    if (panel?.classList.contains('openDrawer')) {
+        return;
+    }
+    document.getElementById('ai-config-button')?.querySelector('.drawer-toggle')?.click();
 }
 
 function editJournalEntry(entry) {
@@ -2210,9 +2291,9 @@ function editJournalEntry(entry) {
             el('div', { class: 'roleEx-label', text: '正文' }),
             body,
             el('div', { class: 'roleEx-row roleEx-gap roleEx-end' }, [
-                el('div', { class: 'menu_button', text: '取消', onclick: close }),
+                el('div', { class: 'menu_button roleEx-btn', text: '取消', onclick: close }),
                 el('div', {
-                    class: 'menu_button', text: '保存', onclick: async () => {
+                    class: 'menu_button roleEx-btn', text: '保存', onclick: async () => {
                         entry.title = title.value.trim() || entry.title;
                         entry.content = body.value;
                         entry.updatedAt = Date.now();
@@ -2509,19 +2590,14 @@ function buildStatePanel() {
     tplSection.content.append(
         el('div', { class: 'roleEx-hint', html: '可用变量：<code>{{stateList}}</code> 会被替换为「名称 值」多行列表。' }),
         tpl,
+        // 单项「恢复默认」已删除（与日记主提示词一致）：统一走扩展设置面板的「恢复默认设置」。
+        // 两个标签必须是 roleEx-inline-label：本行是**不换行**的 flex 行，
+        // 普通 .roleEx-hint 会被压到 min-content（中文 = 一个字宽）→ 竖排。见 style.css 同名规则。
         el('div', { class: 'roleEx-row roleEx-gap roleEx-vcenter' }, [
-            el('span', { class: 'roleEx-hint', text: '注入深度' }),
+            el('span', { class: 'roleEx-hint roleEx-inline-label', text: '注入深度' }),
             depthInput,
-            el('span', { class: 'roleEx-hint', text: '注入角色' }),
+            el('span', { class: 'roleEx-hint roleEx-inline-label', text: '注入角色' }),
             roleSelect,
-            el('div', {
-                class: 'menu_button roleEx-btn-sm', text: '恢复默认', onclick: () => {
-                    tpl.value = DEFAULT_SETTINGS.stateInjectPrompt;
-                    updateSetting('stateInjectPrompt', tpl.value);
-                    applyStateInjection();
-                    toast('success', '已恢复默认状态提示词。');
-                },
-            }),
         ]),
     );
 
@@ -2626,7 +2702,8 @@ function setButtonBusy(busy) {
 //     插进 #top-settings-holder，位置在 World Info 与 User Settings 之间。
 //   - 主面板：普通下拉面板形态（与 #WorldInfo 同款），挂在 #movingDivs 里，
 //     顶部紧贴工具栏居中，宽度 --sheldWidth、最大高度到输入框上方；
-//     #movingDivs > div 自带 z-index 4000，高于 #left-nav-panel / #right-nav-panel 的 3000。
+//     #movingDivs 自身不是层叠上下文，面板的 z-index(3000) 直接和 #top-settings-holder(3005)
+//     比大小 —— 低于它就等于在抽屉栈最底层，任何展开的顶部抽屉都能盖住本面板。
 // ============================================================================
 
 /** 面板最大高度的兜底值（拿不到视口高度时用） */
@@ -2794,7 +2871,7 @@ function layoutMainPanel() {
     } else {
         panel.style.maxHeight = `${PANEL_MAX_HEIGHT_FALLBACK}px`;
     }
-    // 与角色管理面板同时打开时靠 z-index（4000 > 3000）压在上面
+    // 与角色管理面板同时打开时打个标记（层级已让位：面板在抽屉栈最底层，这里只作状态标记）
     const charPanelOpen = document.getElementById('right-nav-panel')?.classList.contains('openDrawer') ?? false;
     panel.classList.toggle('roleEx-panel-over-nav', charPanelOpen);
 }
@@ -2971,45 +3048,23 @@ async function initExtensionSettingsPanel(attempt = 0) {
     const openBtn = root.querySelector('#roleEx-setting-open');
     openBtn?.addEventListener('click', () => openPanel());
 
-    const journalHint = root.querySelector('#roleEx-setting-journal-state');
-    if (journalHint) {
-        const exists = !!getPromptManager()?.getPromptById?.(PRESET_PROMPT.ID);
-        journalHint.textContent = exists
-            ? `日记卡片：${isJournalCardEnabledInPreset() ? '已启用（注入中）' : '已停用（不注入）'} —— 开关在预设 UI 的卡片上`
-            : '日记卡片：预设里没有这张卡片 —— 本扩展只提供正文，卡片需要按 README 3.3 手动写进预设 JSON';
-    }
+    // 日记卡片区块：状态 / 形态 / 权限 / 控件 / 预览 全部由 describeJournalCard() 一处算出，
+    // 与主面板「提示词注入」那一行同源，不会出现两处说法不一致。
+    root.querySelector('#roleEx-setting-open-preset')?.addEventListener('click', () => openPresetPanel());
+    updatePresetCardHint();
 
-    // 补丁检测：让「有没有打 ST 补丁」一眼可见，避免猜
-    const patchHint = root.querySelector('#roleEx-setting-patch-state');
-    if (patchHint) {
-        const marker = supportsMarkerPromptCard();
-        patchHint.textContent = marker
-            ? '预设卡片补丁：已生效（卡片为 marker:true，自带启停开关与编辑铅笔 / Prompt List 预览）'
-            : '预设卡片补丁：未生效 —— 卡片会退化成普通卡片；需要重新应用 patches/st-marker-prompt.patch 并刷新页面（Ctrl+F5）';
-    }
+    root.querySelector('#roleEx-setting-save-defaults')?.addEventListener('click', () => {
+        saveAsDefaults();
+        toast('success', '已把当前配置存为默认设置 —— 之后「恢复默认设置」会恢复到它。');
+    });
 
-    const stateToggle = root.querySelector('#roleEx-setting-state-enable');
-    if (stateToggle) {
-        stateToggle.checked = settings.stateEnabled !== false;
-        stateToggle.addEventListener('change', () => {
-            updateSetting('stateEnabled', stateToggle.checked);
-            applyStateInjection();
-        });
-    }
-
-    const resetBtn = root.querySelector('#roleEx-setting-reset');
-    resetBtn?.addEventListener('click', () => {
-        settings = clone(DEFAULT_SETTINGS);
-        const c = ctx();
-        if (c?.extensionSettings) {
-            c.extensionSettings[MODULE_NAME] = settings;
-        }
-        saveSettingsDebounced();
-        applyStateInjection();
-        ensureRuntimePromptSource();
-        updatePresetCardHint();
+    root.querySelector('#roleEx-setting-reset')?.addEventListener('click', () => {
+        resetToDefaults();
         toast('success', '已恢复默认设置（界面将在刷新后完全同步）。');
     });
+
+    // 「当前默认是内置值还是你存的快照」必须看得见，否则这两个按钮是无反馈的
+    updateDefaultsHint();
 }
 
 // ============================================================================
@@ -3178,6 +3233,9 @@ globalThis.roleExpansion = {
     persistJournal,
     applyStateInjection,
     clearLegacyJournalInjection,
+    saveAsDefaults,
+    resetToDefaults,
+    clearCustomDefaults,
     isJournalCardEnabled: isJournalCardEnabledInPreset,
     readJournalCard,
     logMarkerSupport,

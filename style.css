@@ -67,16 +67,33 @@
     }
 }
 
-/* 真实内容容器：和 #WorldInfo 一样是 .drawer-content，挂在 #movingDivs 下 */
+/* 真实内容容器：和 #WorldInfo 一样是 .drawer-content，挂在 #movingDivs 下。
+   #movingDivs 自身不是层叠上下文（static / z-index:auto），所以下面的 z-index 直接
+   和 #top-settings-holder 比大小 —— 拉开差距就能决定本面板在抽屉栈里的位置。 */
 #movingDivs > .drawer-content.roleEx-panel {
     position: fixed;
     top: var(--topBarBlockSize);
     left: 0;
     right: 0;
     margin: 0 auto;
-    height: auto;
-    /* 高于 #left-nav-panel(3000) / #right-nav-panel(3000) */
-    z-index: 4000;
+    /* --- 展开 / 收起过渡（与酒馆原生抽屉同一套机制） ---
+       可插值的条件是「收起 height: 0 → 展开 height: calc-size(auto, size)」。
+       酒馆的 .drawer-content 本来就是这么写的，但两条把它冲掉了：
+         1) #movingDivs>.drawer-content { height: unset }  ← 只影响挂在 #movingDivs 里的面板
+         2) 本文件原来写的 height: auto
+       于是没有可动画的量，display 变成硬切（很生硬）。
+       这里用更高优先级的选择器把那套重新写一遍；时长仍走酒馆的变量，
+       所以用户在「用户设置」里改动画速度时，本面板会跟着变。 */
+    height: 0;
+    transition-property: height, display;
+    transition-duration: var(--animation-duration-2x);
+    transition-timing-function: ease-in-out;
+    transition-behavior: allow-discrete;
+    /* 抽屉栈的最底层：低于 #top-settings-holder(3005)，任何展开的顶部抽屉
+       （#WorldInfo / 扩展设置 / 用户设置…）都会盖住本面板；
+       仍远高于 #chat(30)，不会被聊天区盖住。
+       注意：左右侧栏也在 #top-settings-holder 内（局部 3000），所以它们同样在本面板之上。 */
+    z-index: 3000;
     display: none;
     flex-flow: column;
     overflow: hidden;
@@ -92,6 +109,17 @@
 
 #movingDivs > .drawer-content.roleEx-panel.openDrawer {
     display: flex;
+    /* 先写 auto 兜底：不支持 calc-size() 的老浏览器退回硬切，而不是高度塌掉 */
+    height: auto;
+    height: calc-size(auto, size);
+}
+
+/* 从 display: none 变为显示的那一帧，也要有个 0 高度的「起始样式」，
+   否则页面加载后的第一次展开仍然是硬切（闭合方向的过渡本来就有起点，不受影响）。 */
+@starting-style {
+    #movingDivs > .drawer-content.roleEx-panel.openDrawer {
+        height: 0;
+    }
 }
 
 /* 面板内容：宽面板下两列自适应，避免右侧留一大片空白 */
@@ -200,12 +228,38 @@
     min-width: 0;
 }
 
+/* 外层区块（日记 / 角色状态栏 / 各提示词区）的展开收起过渡。
+   与主面板同一套机制（§4.7）：收起态 height: 0 是起点，展开态用 calc-size(auto, size)
+   把 auto 变成可插值的量。
+   ⚠️ section() 的 setOpen() 是直接写 inline display 的（§4.5 第 2 条），
+      所以 display 那一半必须靠 transition-behavior: allow-discrete 才能参与过渡 ——
+      少了它，高度会瞬间归零 / 瞬间到位，看着还是硬切。
+   时长同样走酒馆变量，跟随「用户设置」里的动画时长。 */
 .roleEx-section-body {
     padding: 6px 8px 10px 8px;
     display: flex;
     flex-flow: column;
     gap: 10px;
     min-width: 0;
+    height: 0;
+    overflow: hidden;
+    transition-property: height, display;
+    transition-duration: var(--animation-duration-2x);
+    transition-timing-function: ease-in-out;
+    transition-behavior: allow-discrete;
+}
+
+.roleEx-section.roleEx-open > .roleEx-section-body {
+    /* 先 auto 兜底：不支持 calc-size() 的老浏览器退回硬切，而不是把内容压成 0 高 */
+    height: auto;
+    height: calc-size(auto, size);
+}
+
+/* 从 display: none 首次显示那一帧的起点；闭合方向本来就有起点，不受影响 */
+@starting-style {
+    .roleEx-section.roleEx-open > .roleEx-section-body {
+        height: 0;
+    }
 }
 
 /* 嵌套在外层面板正文里的子区块（日记主提示词 / 状态注入提示词）：
@@ -332,6 +386,26 @@
     justify-content: flex-end;
 }
 
+/* flex 行里的文字标签。
+   .roleEx-row 是不换行的 flex 行，行内文字子元素会被压到 min-content ——
+   中文的 min-content 就是「一个字宽」，于是「注入深度」这种标签会变成竖排（实测 12×66px）。
+   凡是当标签用（而不是当说明段落用）的 .roleEx-hint，都要加这个类。 */
+.roleEx-inline-label {
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* 面板里的下拉框必须显式压回正常宽度。
+   酒馆有 `.drawer-content select { width: 100% }`（0,1,1），比 .roleEx-num（0,1,0）更具体，
+   所以下拉框会被撑成整行宽（实测 620px），把同一行后面的控件顶出面板，
+   而 #roleExpansionPanel 是 overflow: hidden —— 顶出去的控件在 DOM 里、却看不见也点不到。
+   这里用面板 id 提升优先级，让它按剩余宽度排。 */
+#roleExpansionPanel select.roleEx-num {
+    width: auto;
+    flex: 1 1 90px;
+    min-width: 0;
+}
+
 .roleEx-input,
 .roleEx-textarea {
     width: 100%;
@@ -422,24 +496,21 @@
     white-space: normal;
 }
 
-.roleEx-settings-label {
+/* 设置面板里的「日记卡片」详情块：状态 / 形态 / 权限 / 控件 / 预览 + 打开预设面板 */
+.roleEx-settings-block {
     display: flex;
-    flex-flow: row;
-    align-items: flex-start;
-    gap: 7px;
-    cursor: pointer;
+    flex-flow: column;
+    gap: 5px;
+    padding: 6px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background-color: var(--black30a);
 }
 
-.roleEx-settings-label input[type="checkbox"] {
-    width: auto;
-    flex: 0 0 auto;
-    margin-top: 3px;
+.roleEx-settings-block .roleEx-label {
+    opacity: 1;
 }
 
-.roleEx-settings-label span {
-    white-space: normal;
-    line-height: 1.35;
-}
 
 /* --- 楼层选择 --- */
 .roleEx-floors {

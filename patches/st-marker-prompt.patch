@@ -204,7 +204,7 @@ index 97b96658e..0dbdf5a70 100644
 +    // 也永远进不了 chatCompletion —— 表现就是「预览里能看到正文，但根本没注入」。
 +    // 各种「不该注入」的情形由 addToChatCompletion 自己兜住：
 +    //   - 卡片在 prompt_order 里 enabled=false → isPromptDisabledForActiveCharacter() 为真，跳过
-+    //   - 卡片没被插进任何 prompt_order 块 → prompts.has() 为假，跳过
++    //   - 卡片没被插进任何 prompt_order 块 → 扩展的内容闸返回空串，故这里的 collectRuntimePromptSources() 不会 push 它（注意：若内容非空，下面 prompts.add() 分支会把它追加到集合末尾，而不是跳过）
 +    //   - 正文为空（没勾选日记 / 没内容）→ collectRuntimePromptSources() 不 push，跳过
 +    for (const identifier of runtimePromptSources.keys()) {
 +        if (chatCompletion.has(identifier)) continue;

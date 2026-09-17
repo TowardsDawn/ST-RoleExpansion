@@ -522,6 +522,21 @@ check('状态显示已启用', fakeHint.textContent.includes('已启用（注入
 check('启用状态带 🟢 标记（换符号时记得同步 README）',
     fakeHint.textContent.includes('🟢 已启用（注入中）'), true);
 
+// 主面板只留一行状态；详情块（上面那个 fakeHint）搬到了酒馆「扩展」设置面板
+const fakeStatus = makeEl('div');
+fakeStatus.setAttribute('id', 'roleEx-inject-status');
+registry.set('roleEx-inject-status', fakeStatus);
+api.updatePresetCardHint();
+check('主面板「提示词注入」显示单行状态', fakeStatus.textContent, '注入状态：🟢 已启用（注入中）');
+const savedOrderGetter = promptManager.getPromptOrderEntry;
+promptManager.getPromptOrderEntry = () => ({ enabled: false });
+api.updatePresetCardHint();
+check('卡片停用时该行跟着变（同一次计算，不会两处说法不一致）',
+    fakeStatus.textContent, '注入状态：🔴 已停用（不注入）');
+promptManager.getPromptOrderEntry = savedOrderGetter;
+api.updatePresetCardHint();
+registry.delete('roleEx-inject-status');
+
 // 模拟「生成过一次」：messages 里有该 identifier
 promptManager.messages = {
     hasItemWithIdentifier: (id) => id === 'roleExpansionJournal',
@@ -614,14 +629,14 @@ check('标题标签不进正文', api.ui.journal[0].content, '她说她不生气
 
 // ---- 示例预设（仓库里的参考预设）一致性 ----
 // 优先用仓库内自带的示例（clone 下来就能跑自测），找不到时回退到开发机上仓库上一级的 test.json。
-// 两者都没有（例如在不含 examples/ 的安装副本里跑自测）时明确跳过，而不是抛 ENOENT 中断整个测试。
+// 两者都没有（例如在不含 examples/ 的安装目录里跑自测）时明确跳过，而不是抛 ENOENT 中断整个测试。
 const presetCandidates = [
     new URL('../examples/preset.example.json', import.meta.url),
     new URL('../../test.json', import.meta.url),
 ];
 const foundPreset = presetCandidates.find(u => existsSync(u));
 if (!foundPreset) {
-    console.log('skip  示例预设一致性检查（未找到 examples/preset.example.json 或上一级 test.json；安装副本里属正常）');
+    console.log('skip  示例预设一致性检查（未找到 examples/preset.example.json 或上一级 test.json；安装目录里属正常）');
 } else {
     const preset = JSON.parse(readFileSync(fileURLToPath(foundPreset), 'utf8'));
     const sampleCard = (preset.prompts || []).find(p => p.identifier === 'roleExpansionJournal');
@@ -668,6 +683,16 @@ check('补丁：Prompt List 兜底预览按真实正文算 token（空内容=0�
 check('补丁：不再把预览 token 写成 undefined', patchText.includes('previewMessage.tokens = undefined'), false);
 check('补丁：没有引入 /api/presets/save（扩展侧对预设只读）', patchText.includes('/api/presets/save'), false);
 
+// ---- 「注入设置」区块搬家：主面板不再有它，详情与跳转都进了扩展设置面板 ----
+check('主面板不再有「注入设置」区块（整块已搬走）', extensionSrc.includes("text: '注入设置'"), false);
+check('「打开预设面板」的接线留在 index.js（openPresetPanel）',
+    extensionSrc.includes('function openPresetPanel()'), true);
+const templateHtml = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
+check('扩展设置面板模板里有详情块 + 打开预设面板按钮',
+    templateHtml.includes('id="roleEx-preset-card-hint"') && templateHtml.includes('id="roleEx-setting-open-preset"'), true);
+check('扩展设置面板不再保留旧的两条提示（已并入详情块，避免重复）',
+    templateHtml.includes('roleEx-setting-journal-state') || templateHtml.includes('roleEx-setting-patch-state'), false);
+
 // ---- 日记面板：两个区块可折叠（用酒馆原生 .inline-drawer，靠 document 级委托折叠） ----
 const floorsFold = registry.get('roleEx-floors-fold');
 const journalFold = registry.get('roleEx-journal-fold');
@@ -688,6 +713,16 @@ check('「参考聊天楼层」默认展开（body 显式 display:block，不靠
     floorsFold?.children?.[1]?.style?.display, 'block');
 check('「日记列表」默认展开（body 显式 display:block，不靠 CSS 默认）',
     journalFold?.children?.[1]?.style?.display, 'block');
+
+// ---- 「插入日记系统」从「注入设置」搬进「日记列表」，且排在「M 篇 · N 篇已勾选」上方 ----
+const injectRow = registry.get('roleEx-inject-journal-row');
+const listBody = journalFold?.children?.[1];
+check('「插入日记系统」行在「日记列表」折叠体内', (listBody?.children || []).includes(injectRow), true);
+check('它是折叠体的第一行，紧挨着计数行（勾选 → 用途 → 现状）',
+    listBody?.children?.[0] === injectRow && listBody?.children?.[1] === registry.get('roleEx-storage-hint'), true);
+check('该行读作「插入日记系统 / 作为「新日记」的参考提示词」',
+    JSON.stringify([injectRow?.children?.[1]?.children?.[0]?.textContent, injectRow?.children?.[1]?.children?.[1]?.textContent]),
+    JSON.stringify(['插入日记系统', '作为「新日记」的参考提示词']));
 check('「角色设定（隔离通道）」也是 .inline-drawer', String(cardFold?.className).includes('inline-drawer'), true);
 check('角色设定折叠的标题文案', cardFold?.children?.[0]?.children?.[0]?.textContent, '角色设定（隔离通道）');
 check('角色设定的折叠图标初始为 down（收起态，与「参考聊天楼层」相反）',
@@ -708,6 +743,15 @@ check('外层区块收起后箭头变 down', String(journalChevron?.className).i
 check('外层区块收起后正文 display:none', journalSectionEl?.children?.[1]?.style?.display, 'none');
 journalSectionHead?.click();
 check('再次点击恢复展开（还原现场）', journalSectionEl?.children?.[1]?.style?.display, 'block');
+
+// ---- 日记面板新增「提示词注入」区块，且必须排在「新日记」之上 ----
+const journalBody = journalSectionEl?.children?.[1];
+const injectBlockEl = registry.get('roleEx-inject-block');
+const newJournalBlockEl = registry.get('roleEx-new-journal-block');
+check('日记面板新增「提示词注入」区块', !!injectBlockEl, true);
+check('「提示词注入」排在「新日记」之前',
+    (journalBody?.children || []).indexOf(injectBlockEl) !== -1
+    && (journalBody?.children || []).indexOf(injectBlockEl) < (journalBody?.children || []).indexOf(newJournalBlockEl), true);
 
 // ---- 日记面板：「全选」「清空」是两个独立按钮（不再合并成一个会变文案的按钮） ----
 const selectAllBtn = registry.get('roleEx-select-all');
@@ -823,14 +867,14 @@ const sidePanel = registry.get('roleExpansionPanel');
 check('面板已挂到 #movingDivs', domMovingDivs.children.includes(sidePanel), true);
 check('面板用的是 .drawer-content（与 #WorldInfo 同款）', String(sidePanel?.className).includes('drawer-content'), true);
 check('面板初始为关闭（不带 openDrawer）', String(sidePanel?.className).includes('closedDrawer'), true);
-check('面板带 roleEx-panel 类（z-index 走 #movingDivs > div 的 4000）', String(sidePanel?.className).includes('roleEx-panel'), true);
+check('面板带 roleEx-panel 类（z-index 由这条规则压到抽屉栈之下，不用 #movingDivs > div 的 4000）', String(sidePanel?.className).includes('roleEx-panel'), true);
 check('面板宽度取 --sheldWidth', sidePanel?.style.width, '900px');
 check('面板高度上限 = 视口 - 工具栏 - 输入栏 - 8（738-40-70-8）', sidePanel?.style.maxHeight, '620px');
 
-// 角色管理面板打开时打上优先级标记（z-index 4000 > 3000）
+// 角色管理面板打开时打上状态标记（面板层级已不靠 z-index 争抢，标记只作状态记录）
 domRightNav.classList.add('openDrawer');
 api.layoutMainPanel();
-check('角色管理打开时标记为压在上面', sidePanel?.classList.contains('roleEx-panel-over-nav'), true);
+check('角色管理打开时打上标记', sidePanel?.classList.contains('roleEx-panel-over-nav'), true);
 domRightNav.classList.remove('openDrawer');
 api.layoutMainPanel();
 check('角色管理关闭后标记清除', sidePanel?.classList.contains('roleEx-panel-over-nav'), false);
@@ -1089,6 +1133,47 @@ check('14 汉字的未知名称被长度闸挡下',
 check('被挡下的长标签保留在正文里',
     chat[chat.length - 1].mes.includes('<这是一个非常长的未知标签名称>值</这是一个非常长的未知标签名称>'), true);
 api.settings.stateOnlyKnownNames = true;
+
+// ---- 面板里不再有任何单项「恢复默认」按钮 ----
+// 日记主提示词 / 状态注入提示词两处都删了，统一走扩展设置面板的「恢复默认设置」。
+// 注：状态注入提示词那一处的按钮其实**一直挂在 DOM 里**，只是被不换行的 flex 行顶出面板、
+// 被 overflow: hidden 裁掉了 —— 那是布局问题，自测的 stub DOM 没有排版能力，测不到，
+// 所以这里只能守住「别再把它加回来」。布局约定见 DEVELOPMENT.md §4.5。
+const strayReset = [];
+(function walk(node) {
+    for (const child of node?.children || []) {
+        if (String(child.className || '').includes('menu_button') && String(child.textContent).trim() === '恢复默认') {
+            strayReset.push(child);
+        }
+        walk(child);
+    }
+})(registry.get('roleExpansionPanel'));
+check('面板里已无单项「恢复默认」按钮', strayReset.length, 0);
+
+// ---- 「存为默认设置」/「恢复默认设置」：基准存在扩展设置容器的独立键里 ----
+const builtinRefHeader = api.settings.journalRefHeader;
+api.settings.journalRefHeader = '我存的自定义默认';
+api.settings.journalInjectToJournal = true;
+api.saveAsDefaults();
+check('存为默认设置：快照写进扩展设置容器的独立键',
+    !!extensionSettings['ST-RoleExpansion_defaults'], true);
+check('快照不混进 settings 自身（settings 里没有这个键）',
+    'ST-RoleExpansion_defaults' in extensionSettings['ST-RoleExpansion'], false);
+api.settings.journalRefHeader = '后来又被改了';
+api.settings.journalInjectToJournal = false;
+api.resetToDefaults();
+check('「恢复默认设置」恢复到自定义默认（多个键一起）',
+    JSON.stringify([api.settings.journalRefHeader, api.settings.journalInjectToJournal]),
+    JSON.stringify(['我存的自定义默认', true]));
+api.clearCustomDefaults();
+check('清除自定义默认：独立键被删掉', 'ST-RoleExpansion_defaults' in extensionSettings, false);
+api.resetToDefaults();
+check('清除后再「恢复默认设置」回到内置默认', api.settings.journalRefHeader, builtinRefHeader);
+
+// 模板层面：两个按钮都在，且「存为默认设置」在上（先存再恢复）
+check('扩展设置面板模板里有「存为默认设置」，且排在「恢复默认设置」之前',
+    templateHtml.indexOf('roleEx-setting-save-defaults') !== -1
+    && templateHtml.indexOf('roleEx-setting-save-defaults') < templateHtml.indexOf('id="roleEx-setting-reset"'), true);
 
 console.log(failed ? `\n${failed} / ${total} 项失败` : `\n全部通过（共 ${total} 项断言）`);
 process.exit(failed ? 1 : 0);
