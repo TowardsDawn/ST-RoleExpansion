@@ -1,0 +1,159 @@
+diff --git a/src/endpoints/role-expansion.js b/src/endpoints/role-expansion.js
+new file mode 100644
+index 0000000..787642b
+--- /dev/null
++++ b/src/endpoints/role-expansion.js
+@@ -0,0 +1,129 @@
++/**
++ * ST-RoleExpansion: 日记文件存取端点（由 patches/st-journal-store.patch 引入）
++ *
++ * 只做两件事：读 / 写
++ *   <user>/chats/<角色目录>/_RoleExpansion/journals/<文件名>
++ *
++ * 为什么放在角色聊天目录下的子目录：
++ *   - 酒馆所有"列聊天文件"的代码路径（chats.js /search、chats.js /recent、
++ *     characters.js /chats）都只扫 chats/<角色>/ 本级、且要求 isFile()，
++ *     不会把子目录里的文件当聊天文件列出来或加载；
++ *   - 角色改名/换头像时 chats/<旧>/ 会被 cpSync(recursive) 整体搬到新名字下
++ *     （characters.js:1083-1086），日记跟着走；删除角色并勾选"删除聊天"时
++ *     rm(recursive) 连根删除（characters.js:1440）——语义与"角色的私人物品"一致。
++ *
++ * 为什么必须由服务端提供（前端拿不到这个位置）：
++ *   - /api/files/* 只接受 /^[a-zA-Z0-9_\-.]+$/ 的单段文件名
++ *     （assets.js: validateAssetFileName，'/' 与中文一律拒绝）；
++ *   - /api/chats/* 的路径参数全部经过 sanitize-filename，'/' 会被直接删掉。
++ */
++
++import path from 'node:path';
++import fs from 'node:fs';
++
++import express from 'express';
++import sanitize from 'sanitize-filename';
++import { sync as writeFileSyncAtomic } from 'write-file-atomic';
++
++import { isPathUnderParent } from '../util.js';
++import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
++
++export const router = express.Router();
++
++/** 角色聊天目录下的插件私有子目录 */
++const PRIVATE_DIR = '_RoleExpansion';
++const JOURNAL_SUBDIR = 'journals';
++
++/** 与酒馆 /api/files/upload 同一条文件名规则（assets.js: validateAssetFileName） */
++const ALLOWED_FILE_NAME_RE = /^[a-zA-Z0-9_\-.]+$/;
++
++/** 单次写入上限，防止把聊天目录塞爆（日记是纯文本，正常量级几十 KB） */
++const MAX_TEXT_LENGTH = 16 * 1024 * 1024;
++
++/**
++ * 解析日记文件的绝对路径。任何不合法的输入返回 null，调用方一律回 400。
++ *
++ * @param {{ chats: string }} directories 用户目录集合
++ * @param {string} avatarUrl 角色头像文件名（酒馆惯例，如 "樱井 奈奈.png"）
++ * @param {string} fileName 单段文件名（如 "RoleExpansion_journal_c_1a2b3c4d_j_5e6f7a8b.jsonl"）
++ * @returns {{ charChatsDir: string, dir: string, filePath: string } | null}
++ */
++export function resolveJournalPath(directories, avatarUrl, fileName) {
++    // 角色目录 = 头像文件名去掉 .png（与 chats/<角色> 的规则一致）
++    const charDir = path.basename(String(avatarUrl ?? ''), '.png');
++    if (!charDir || charDir === '.' || charDir === '..') {
++        return null;
++    }
++
++    const name = String(fileName ?? '');
++    if (!name || name.startsWith('.')) {
++        return null;
++    }
++    if (!ALLOWED_FILE_NAME_RE.test(name)) {
++        return null;
++    }
++    // sanitize-filename 会改写保留名/超长名，能通过说明是干净的单段名
++    if (sanitize(name) !== name) {
++        return null;
++    }
++    if (path.extname(name).toLowerCase() !== '.jsonl') {
++        return null;
++    }
++
++    const charChatsDir = path.join(directories.chats, charDir);
++    const dir = path.join(charChatsDir, PRIVATE_DIR, JOURNAL_SUBDIR);
++    const filePath = path.join(dir, name);
++
++    // 双保险：解析后的路径必须仍落在各自的父目录内
++    if (!isPathUnderParent(directories.chats, charChatsDir)) {
++        return null;
++    }
++    if (!isPathUnderParent(dir, filePath)) {
++        return null;
++    }
++
++    return { charChatsDir, dir, filePath };
++}
++
++router.post('/journal/get', validateAvatarUrlMiddleware, function (request, response) {
++    try {
++        const target = resolveJournalPath(request.user.directories, request.body?.avatar_url, request.body?.file_name);
++        if (!target) {
++            return response.status(400).send('Invalid journal path');
++        }
++
++        if (!fs.existsSync(target.filePath)) {
++            return response.send({ exists: false, text: '' });
++        }
++
++        const text = fs.readFileSync(target.filePath, 'utf8');
++        return response.send({ exists: true, text });
++    } catch (error) {
++        console.error('ST-RoleExpansion: failed to read journal file', error);
++        return response.sendStatus(500);
++    }
++});
++
++router.post('/journal/save', validateAvatarUrlMiddleware, function (request, response) {
++    try {
++        const target = resolveJournalPath(request.user.directories, request.body?.avatar_url, request.body?.file_name);
++        if (!target) {
++            return response.status(400).send('Invalid journal path');
++        }
++
++        const text = request.body?.text;
++        if (typeof text !== 'string') {
++            return response.status(400).send('No text specified');
++        }
++        if (text.length > MAX_TEXT_LENGTH) {
++            return response.status(413).send('Journal file is too large');
++        }
++
++        fs.mkdirSync(target.dir, { recursive: true });
++        writeFileSyncAtomic(target.filePath, text);
++        return response.send({ ok: true });
++    } catch (error) {
++        console.error('ST-RoleExpansion: failed to save journal file', error);
++        return response.sendStatus(500);
++    }
++});
+diff --git a/src/server-startup.js b/src/server-startup.js
+index 9eb9a0e..e587fa2 100644
+--- a/src/server-startup.js
++++ b/src/server-startup.js
+@@ -50,7 +50,8 @@ import { router as minimaxRouter } from './endpoints/minimax.js';
+ import { router as dataMaidRouter } from './endpoints/data-maid.js';
+ import { router as backupsRouter } from './endpoints/backups.js';
+ import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
+-import { router as volcengineRouter } from './endpoints/volcengine.js';
++import { router as volcengineRouter } from './endpoints/volcengine.js';
++import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
+ 
+ /**
+  * @typedef {object} ServerStartupResult
+@@ -184,7 +185,8 @@ export function setupPrivateEndpoints(app) {
+     app.use('/api/minimax', minimaxRouter);
+     app.use('/api/data-maid', dataMaidRouter);
+     app.use('/api/backups', backupsRouter);
+-    app.use('/api/image-metadata', imageMetadataRouter);
++    app.use('/api/image-metadata', imageMetadataRouter);
++    app.use('/api/role-expansion', roleExpansionRouter);
+ }
+ 
+ /**

@@ -454,6 +454,11 @@
     color: var(--fullred, #ff5555);
 }
 
+/* 日记/状态不可用（群聊、缺补丁）时的红字说明 */
+.roleEx-warn {
+    color: var(--fullred, #ff5555);
+}
+
 /* --- 复选框行 --- */
 .roleEx-checkbox-row {
     display: flex;

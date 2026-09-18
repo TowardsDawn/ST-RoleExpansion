@@ -5,7 +5,7 @@
 让角色把经历过的事写成日记，并在之后的对话里记得；让生命值、好感度这类数值随剧情自动变化，
 而不是你手动维护。
 
-![version](https://img.shields.io/badge/version-0.4.0-blue)
+![version](https://img.shields.io/badge/version-0.5.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
@@ -15,10 +15,10 @@
 
 ## 这是什么
 
-| 模块 | 它做什么 |
-| --- | --- |
-| 📔 **日记** | 勾选若干聊天楼层 → 模型以角色第一人称写一篇日记 → 存成按会话隔离的 `.jsonl`。勾选任意几篇，它们就会被注入后续对话，成为角色「记得的事」。支持导出 / 导入 / 编辑 / 删除 |
-| ❤️ **角色状态栏** | 维护一组状态（`生命值 8/10`、`好感度 42`…），每次生成前自动注入；模型回复里的 `<名称>值</名称>` 会被解析、更新数值，并从正文里剥离 |
+| 模块 | 它做什么 | 文档 |
+| --- | --- | --- |
+| 📔 **日记** | 勾选若干聊天楼层 → 模型以角色第一人称写一篇日记 → 存成按会话隔离的 `.jsonl`；勾选任意几篇注入后续对话，成为角色「记得的事」 | [modules/journal/README.md](modules/journal/README.md) |
+| ❤️ **角色状态栏** | 维护一组状态（`生命值 8/10`、`好感度 42`…），每次生成前自动注入；模型回复里的 `<名称>值</名称>` 会被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
 
 两个模块共用一个面板，入口是顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
 
@@ -33,12 +33,14 @@
 
 ### ⚠️ 一个前提：需要给 ST 打一次补丁
 
-原版酒馆的「运行时提示词源」是硬编码的，第三方扩展无法加入自己的 identifier，
-于是第三方 marker 卡片既没有编辑铅笔、也没有启停开关。本扩展因此附带一份**极小的补丁**
-（`patches/st-marker-prompt.patch`，约 162 行，只做新增与放行判断，不改动原生行为）。
+原版酒馆有两件事第三方扩展做不到，本扩展因此附带**两份极小的补丁**（都只做新增与放行判断，不改动原生行为）：
 
-**装好扩展 ≠ 装好了**，补丁需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
-未打补丁的症状非常具体：卡片上没有开关和编辑铅笔，日记注入不生效。
+| 补丁 | 解决什么 | 不打会怎样 |
+| --- | --- | --- |
+| `patches/st-marker-prompt.patch`（约 162 行） | 运行时提示词源是硬编码的，第三方 marker 卡片没有编辑铅笔、没有启停开关 | 卡片上没开关和铅笔，日记注入不生效 |
+| `patches/st-journal-store.patch`（约 47 行） | 没有接口能让前端写进 `chats/<角色>/`，日记没地方按角色存放 | 日记整块不可用（面板红字提示缺补丁） |
+
+**装好扩展 ≠ 装好了**，两份补丁都需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
 
 ---
 
@@ -47,52 +49,42 @@
 - [特性](#特性)
 - [环境要求](#环境要求)
 - [安装](#安装)
-  - [装扩展](#装扩展) ｜ [打补丁（必须）](#打补丁必须) ｜ [写预设卡片](#写预设卡片) ｜ [验证一下](#验证一下)
+  - [装扩展](#装扩展) ｜ [打补丁（必须）](#打补丁必须) ｜ [写预设卡片](#写预设卡片日记模块用) ｜ [验证一下](#验证一下)
 - [快速开始](#快速开始)
 - [界面导览](#界面导览)
 - [核心机制](#核心机制)
-- [日记模块](#日记模块)
-- [角色状态栏](#角色状态栏)
+- [模块](#模块)
 - [调试与自测](#调试与自测)
 - [常见问题](#常见问题)
 - [已知限制](#已知限制)
 - [仓库结构](#仓库结构)
 - [开发说明](DEVELOPMENT.md)（面向开发者 / 接手的人）
 - [许可](#许可)
-
----
-
 ## 特性
 
-**日记**
-
-- 自由勾选参考楼层：逐条勾、快捷「最近 10 楼」、或按区间「第 N ~ M 楼」（0 起、两端都含，反向填写自动交换）
-- 标题由模型随正文生成（`<title>` / `# 标题` / `【标题】` / `标题：…` 四种形式都能解析），也可以自己填、随时编辑
-- 一篇日记 = jsonl 里的一行，天然独立，不会以「续写」形式黏在上一篇后面
-- 按会话隔离：换角色、换存档互不干扰；文件名带会话 hash，真实角色名/会话名记在文件首行
-- 导入 / 导出 / 单篇导出 / 编辑 / 删除，都是 jsonl，随时备份
-- 主提示词完全可改，支持 `{{chatRange}}` / `{{journalRefs}}` / `{{stateList}}` 与酒馆宏
-
-**角色状态栏**
-
-- 状态列表增删改、批量添加、逐项编辑、清空、复制为文本、从剪贴板导入
-- 发送前自动注入（深度与角色可调，模板可改）
-- 自动解析回复里的 `<名称>值</名称>`、更新数值、并从正文剥离
-- 按会话隔离，随聊天记录一起保存
-
-**工程上的取舍**
+**框架**
 
 - 纯前端、无构建步骤、无依赖：原生 ESM，丢进扩展目录就能跑
-- 不依赖任何后端 server plugin；日记落盘走酒馆自带的 `/api/files` 接口
-- 配套一份离线自测（最小 DOM / ST 桩，**244 项断言**），CI 对 Node 18 / 20 / 22 各跑一遍
+- 一个面板管所有模块：顶部羽毛图标 → 抽屉式主面板（宽度取 `--sheldWidth`、高度到输入框上方）
+- **日记 / 角色状态栏都是可拆模块**：删掉 `modules/journal/` 或 `modules/state/` 整个目录（甚至两个都删），
+  框架照常启动；文件在时也可以在「扩展」设置面板里单独**禁用**（刷新页面生效）。
+  名录由 `modules/manifest.json` 驱动 —— 加一个模块只要放好目录 + 改这个 JSON，框架里没有任何模块名
+- 两个模块都拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
+  「扩展」设置面板里只剩框架自己的东西 —— 不会出现「空白面板 + 永远检测中」的假故障
+- 「存为默认设置」/「恢复默认设置」统一管**所有模块的设置项**（快照存进酒馆的扩展设置，重启仍在）
+- 配套离线自测（最小 DOM / ST 桩，**270 项断言**）+ 补丁端点 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
 
----
+**模块**（各自成文）
 
+| 模块 | 一句话 | 文档 |
+| --- | --- | --- |
+| 📔 日记 | 勾选楼层 → 模型以角色第一人称写一篇日记 → 按会话存成 jsonl → 勾选任意几篇注入后续对话 | [modules/journal/README.md](modules/journal/README.md) |
+| ❤️ 角色状态栏 | 维护一组状态，生成前自动注入；回复里的 `<名称>值</名称>` 被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
 ## 环境要求
 
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
-| SillyTavern | **≥ 1.18.0** | 开发与验证版本。补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` 为基线，换版本前请先确认它能 `git apply` |
+| SillyTavern | **≥ 1.18.0** | 开发与验证版本。两份补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线，换版本前先 `git apply --check` |
 | ST 接口 | Chat Completion 类 | 卡片与提示词管理器依赖 Chat Completion；文本补全类接口下面板会提示「尚未就绪」 |
 | ST 补丁 | **必须应用一次** | 见下方第 2 步 |
 | Node.js | ≥ 18（**仅自测需要**） | 扩展本身在浏览器里跑，装插件不需要 Node |
@@ -127,9 +119,10 @@ git clone https://github.com/TowardsDawn/ST-RoleExpansion.git ST-RoleExpansion
 
 ```bash
 git apply /path/to/ST-RoleExpansion/patches/st-marker-prompt.patch
+git apply /path/to/ST-RoleExpansion/patches/st-journal-store.patch
 ```
 
-补丁做了五件事（细节见[核心机制](#核心机制)）：
+第一个补丁做了五件事（细节见[核心机制](#核心机制)）：
 
 1. `openai.js`：新增 `registerRuntimePromptSource()` 与三张注册表；
 2. `openai.js`：构建 `systemPrompts` 时合并这些运行时源，并把它们排除在通用扩展 prompt 覆盖循环之外；
@@ -139,42 +132,20 @@ git apply /path/to/ST-RoleExpansion/patches/st-marker-prompt.patch
 
 > 第 3 条与第 5 条最容易漏，症状也最迷惑 —— 见[常见问题](#常见问题)。
 
+第二个补丁（`st-journal-store.patch`）只做两件事：新增 `src/endpoints/role-expansion.js`
+（日记读写端点，写进 `chats/<角色>/_RoleExpansion/journals/`，带路径穿越防护与原子写），
+并在 `src/server-startup.js` 挂一行 `app.use('/api/role-expansion', …)`。
+
+> ⚠️ 这个补丁改的是**服务端**代码，打完必须**重启 ST 主进程**（不像前端 `scripts/*.js` 那样
+> `Ctrl+F5` 就能重载）。没打补丁不会静默出错：日记面板会红字写明缺哪个补丁。
+
 也可以按补丁内容手动改那三个文件。打完补丁后 **`Ctrl+F5` 强制刷新**（浏览器会缓存 `scripts/*.js`）。
 
-### 写预设卡片
+### 写预设卡片（日记模块用）
 
-在你要用的**预设 JSON** 里加两处（`examples/preset.example.json` 就是照这个形态写好的，可直接导入或照抄）：
-
-```jsonc
-// 1) prompts 数组里追加一条 —— 四个字段就够，与 World Info (after) 同形
-{
-    "identifier": "roleExpansionJournal",
-    "name": "日记（角色扩展）",
-    "system_prompt": true,
-    "marker": true
-}
-```
-
-```jsonc
-// 2) prompt_order 里【每个 character_id 块】都要加一条，位置建议紧跟 worldInfoAfter
-{ "identifier": "worldInfoAfter",       "enabled": true },
-{ "identifier": "roleExpansionJournal", "enabled": true },
-{ "identifier": "dialogueExamples",     "enabled": true }
-```
-
-改完预设文件后，在预设下拉里**重新选一次该预设**（或刷新页面）让 ST 重新读取。
-
-> `marker: true` 表示「正文不来自预设、由运行时提供」，所以**不要**给这条卡片写 `content`。
-> 其余字段（`role` / `injection_position` / `injection_trigger` / `forbid_overrides` / `extension`）
-> 都不需要。你也可以直接在预设 UI 里改它的名字、身份、触发器、位置 —— 扩展不会覆盖。
->
-> 也就是说，它和 `World Info (after)` / `Char Description` / `Scenario` 一样，是「有序提示词」中的一行，
-> 会在预设 UI 里作为可拖动的一行出现。
->
-> `examples/preset.example.json` 里的示例卡片用的就是同一个 `identifier`，导入后扩展会把它认作
-> 自己的卡片（**不会**再生成第二张）；它已经在两个 `prompt_order` 块里紧随 `worldInfoAfter` 之后、
-> `enabled: true`，可以直接拖动或单独开关来验证效果。
-
+日记注入走酒馆原生的**有序提示词**：预设里放一张 `marker: true` 卡片，它的位置、名字、启停全在预设 UI 里管，
+扩展只**读**它、并在每次生成时喂正文。要写入的 JSON 片段、`prompt_order` 每个块都要加一条的注意事项、
+以及 `examples/preset.example.json` 怎么用，都在 [modules/journal/README.md](modules/journal/README.md)。
 ### 验证一下
 
 刷新后打开控制台：
@@ -189,14 +160,11 @@ roleExpansion.logMarkerSupport()
 
 ## 快速开始
 
-1. 打开顶部工具栏的**羽毛图标**，展开「日记」区块。
-2. 在「参考聊天楼层」里勾选要参考的楼层（例如「最近 10 楼」，或填 `第 0 ~ 19 楼` 后点「选中区间」）。
-3. 点**生成日记** —— 模型会用你当前配置的 API 写一篇，并立即存入当前会话的 jsonl。
-4. 之后在日记列表里勾选任意几篇 → 打开预设里那张卡片的开关 → 这些日记就会在后续对话中注入。
-5. 想让数值随剧情变化？切到「角色状态栏」区块，按「每行：`名称 值`」批量添加几项即可。
-
----
-
+1. 打开顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
+2. 面板里是**若干个可折叠区块** —— 默认是「日记」和「角色状态栏」两块，想用哪个就展开哪个。
+3. 各自的完整用法（怎么生成日记、状态怎么写、有哪些开关与坑）见模块文档：
+   [modules/journal/README.md](modules/journal/README.md) ｜ [modules/state/README.md](modules/state/README.md)。
+   本文只讲框架与安装。
 ## 界面导览
 
 | 入口 | 说明 |
@@ -204,20 +172,21 @@ roleExpansion.logMarkerSupport()
 | 顶部工具栏羽毛图标 | 主入口，位于「世界书 World Info」与「用户设置 User Settings」之间 |
 | 主面板 | 与「世界书」同款的**下拉面板**：紧贴工具栏居中，宽度取 `--sheldWidth`，高度到输入框上方 |
 | 「角色管理」面板 | 角色卡编辑区中 `Chat Lore` 按钮右侧的羽毛按钮，一键打开面板 |
-| 「扩展」设置面板 | **日记卡片的完整状态**（启停 / 形态 / 权限 / 控件 / 预览）与「打开预设面板」都搬到了这里；另有「打开角色扩展面板」「存为默认设置」「恢复默认设置」 |
+| 「扩展」设置面板 | 「模块」表（装了哪些 / 启用禁用）、**各模块自己挂进来的设置区块**、「打开角色扩展面板」「存为默认设置」「恢复默认设置」都在这里 |
 
-面板内是**两个可折叠区块**（日记 / 角色状态栏），各自还嵌套一个默认收起的子区块
-（「日记主提示词（可自由修改）」/「状态注入提示词」）。面板较宽时内容自动排成两列，窄屏回退单列。
+面板里是**若干个可折叠区块**：一个模块挂一块（默认两块：日记 / 角色状态栏），每块内部还有自己的子区块。
+模块不在时那一块就不存在 —— 不会留下空壳，也不会出现「永远检测中」的假故障。
 
+主面板与各区块的 UI 约定（折叠箭头语义、过渡动画、两列布局、面板层级）见 [DEVELOPMENT.md](DEVELOPMENT.md) §4。
 ### 「存为默认设置」/「恢复默认设置」
 
 | 按钮 | 做什么 |
 | --- | --- |
-| **存为默认设置** | 把**当前全部设置**（日记主提示词、注入深度与角色、状态提示词、各种开关…）存成新的基准。快照存在酒馆的扩展设置里，重启仍在 |
+| **存为默认设置** | 把**当前全部设置**（框架的 + 所有已装模块的设置项）存成新的基准。快照存在酒馆的扩展设置里，重启仍在 |
 | **恢复默认设置** | 恢复到当前基准 —— 没存过 = 扩展内置默认；存过 = 你那份快照 |
 
 - 两个按钮下方那行提示会告诉你**当前基准是哪一个**（内置值 / 你的快照）。
-- 「恢复默认设置」**只动设置**，不碰日记文件（`user/files/*.jsonl`）与当前会话的状态列表。
+- 「恢复默认设置」**只动设置**，不碰日记文件（`chats/<角色>/_RoleExpansion/journals/*.jsonl`）与当前会话的状态列表。
 - 想回到出厂值：控制台执行 `roleExpansion.clearCustomDefaults()`，再点一次「恢复默认设置」。
 - 两者都**没有二次确认**；重置后主面板里的输入框仍显示旧值，**刷新页面**才完全同步。
 
@@ -323,337 +292,74 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 
 **预设完全归你管，扩展只是这张卡片的一个「内容供应商」。**
 
-### 为什么「是否注入主聊天」只有预设卡片一个开关
-
-扩展面板里**没有**「插入主聊天系统」开关，这是刻意的：
-
-| 场景 | 行为 |
-| --- | --- |
-| 卡片开关打开 | 每次生成时扩展提供日记正文，正常注入 |
-| 卡片开关关闭 | 运行时源返回空串 → 不注入；面板显示「🔴 已停用（不注入）」 |
-| 换会话 / 启动 | 扩展读卡片状态并同步面板显示，**绝不擅自改回**你的选择 |
-| 换位置 | 直接在预设 UI 里拖动卡片；扩展**从不**改动 `prompt_order` |
-| 卡片不存在 | 扩展**不会**替你创建，面板会把该写的 JSON 片段贴出来 |
-| 「扩展」设置面板里的「打开预设面板」按钮 | 一键打开 AI 配置侧栏去操作卡片 |
-
-主面板「日记 → **提示词注入**」区块只显示一行状态（`注入状态：🟢 已启用（注入中）` /
-`注入状态：🔴 已停用（不注入）`）；**完整诊断搬到了酒馆「扩展」设置面板的日记卡片区块**，
-并配一个「打开预设面板」按钮：
-
-```text
-日记卡片 · roleExpansionJournal
-状态：🟢 已启用（注入中）
-预设「test」· 标识 roleExpansionJournal · 位置与开关都在预设 UI 里管理
-形态：marker=true（正文由扩展的运行时源提供）
-权限：PromptManager 已放行（开关 + 铅笔应当可见）
-控件：铅笔 + 开关已在该行显示
-预览：点预设里卡片的名字即可查看（补丁支持即时构建预览）
-          [打开预设面板]  开关卡片＝启停注入；正文由扩展提供，位置与启停都在预设 UI 里管理
-```
-
-行为边界：
-
-- 扩展对预设**只读**：不创建、不修改、不移动卡片，也不调用 `/api/presets/save`。
-- 勾选变化只影响注入内容与状态文案；marker 模式下预设里始终保持空白。
-- 当前接口不是 Chat Completion 时读不到提示词管理器，面板会明确提示「尚未就绪」。
-- 取消全部勾选时运行时源返回空串，注入立即停止，不会残留。
+「是否注入主聊天」这件事**只有预设卡片一个开关**（刻意不提供第二个开关）：开关打开 → 扩展提供正文、正常注入；
+关闭 → 运行时源返回空串、不注入，面板显示「🔴 已停用（不注入）」；扩展**绝不擅自改回**你的选择。
+具体到日记卡片的行为与诊断输出，见 [modules/journal/README.md](modules/journal/README.md)。
 
 ---
 
-## 日记模块
+## 模块
 
-### 生成日记
+一个模块 = `modules/<id>/` 一个目录，自带文档、可单独拆掉：
 
-1. 在「参考聊天楼层」里勾选楼层。除逐条勾选外：
-   - 第一行快捷按钮：`最近 10 楼` / `全选` / `清空` / `刷新楼层`；
-   - 第二行**区间选择**：填「第 `N` ~ `M` 楼」后点「选中区间」。编号与列表里的 `#号` 一致
-     （**0 起、两端都含**，与酒馆 UI、`/hide` 一致）；反向填写会自动交换；
-     区间内没有可用楼层时会提示，并且**不改动**当前选择。
-2. （可选）在下方日记列表中勾选若干**已有日记**作为参考。
-3. （可选）填标题，**会覆盖模型生成的标题**；留空即由模型生成。
-4. 点「生成日记」。
+| 模块 | id | 目录 | 用户文档 | 开发文档 |
+| --- | --- | --- | --- | --- |
+| 📔 日记 | `journal` | `modules/journal/` | [README](modules/journal/README.md) | [DEVELOPMENT](modules/journal/DEVELOPMENT.md) |
+| ❤️ 角色状态栏 | `state` | `modules/state/` | [README](modules/state/README.md) | [DEVELOPMENT](modules/state/DEVELOPMENT.md) |
 
-**标题的解析优先级**（生成的标题不会混进正文）：
+### 装上 / 拆掉 / 禁用
 
-```text
-用户手填的标题  >  正文里的 <title>…</title>  >  首行 # 标题 / 【标题】 / 标题：…  >  日期时间兜底
-```
-
-生成走**酒馆当前配置的 API**，与主聊天记录、状态标签解析都无关（不往聊天记录里写消息，
-也不触发状态解析），完成后立即写入当前会话的 jsonl。
-
-### 隔离生成 vs 安静生成
-
-面板「新日记」区有一个**默认开启**的开关「**隔离生成（推荐）**」：
-
-| 通道 | ST 侧接口 | 请求里有什么 | 何时用 |
-| --- | --- | --- | --- |
-| 隔离生成（默认） | `generateRaw` | 日记提示词（一条 `user` 消息）+ 可选的**角色设定** `system` 消息：不带主聊天记录、世界书、预设卡片 | 换模型也不会被主聊天语境带跑 |
-| 安静生成（回退） | `generateQuietPrompt` + `skipWIAN` | 完整 system 提示词组 + 整条主聊天记录 + 末尾一条写日记指令 | 「隔离生成」关掉、或该接口缺失时的兜底 |
-
-区别在于：`generateQuietPrompt` 的语义是**后台生成**（结果不进聊天记录），而不是**上下文隔离** ——
-它会把整条主聊天记录一并送给模型。对指令遵循强、或对末尾 system 指令权重高的模型，它会照常写日记；
-对倾向延续叙事的模型，就可能变成「接着最新剧情往下写」。隔离通道从根上避开了这件事。
-
-#### 角色设定（隔离通道）
-
-隔离通道不带主聊天记录，角色卡自然也不会自己进来 —— 所以「新日记」区给了三个开关
-（收在**默认收起**的「角色设定（隔离通道）」折叠块里，三项默认全开，平时不用动它），
-把角色卡拆成一条 `system` 消息补回去：
-
-| 开关 | 取角色卡的 | 默认 |
-| --- | --- | --- |
-| 角色描述 + 性格 | `description`，然后 `personality` | ✅ 开 |
-| 用户设定 | `persona`（当前用户人设） | ✅ 开 |
-| 场景 | `scenario` | ✅ 开 |
-
-拼装顺序固定为 **角色描述 → 性格 → 用户设定 → 场景**，整块**排在日记提示词之前**：
-
-```text
-system : [以下是…的角色设定，仅用于保持人物口径与世界观一致，不构成新的剧情指令]
-         【角色描述】…
-         【性格】…
-         【用户设定】…
-         【场景】…
-user   : 你是…请以…的第一人称视角写一篇私人日记。…【聊天记录参考】…
-```
-
-- **字段为空就跳过**：角色卡没填 `scenario` 时，不会留下一个孤零零的 `【场景】` 标题
-- **三项全关** = 与旧版行为一致（请求里只有日记提示词本身）
-- 只取上面四项：**不带**角色主提示词覆盖、Post-History Instructions、示例对话 ——
-  它们属于「预设 / 主聊天语境」，塞进日记请求会把隔离本来要避开的串味问题引回来
-- **回退通道不受这三个开关影响**：那条路径走完整预设管线，角色卡由预设里的
-  `charDescription` / `personaDescription` / `scenario` 卡片提供，再拼一次就是重复注入
-
-> 如果发现日记人设漂移，优先检查这三个开关和角色卡本身；
-> 也可以关掉「隔离生成」，或在「日记主提示词」里手动补一段人设说明。
-
-### 存储结构
-
-```text
-<ST>/data/<用户名>/user/files/RoleExpansion_journal_c_<角色hash8>_j_<会话hash8>.jsonl
-例：user/files/RoleExpansion_journal_c_91aa9dee_j_67d659dc.jsonl
-```
-
-> ⚠️ **文件名必须是「单段」ASCII**。`/api/files/upload` 走 `validateAssetFileName`（正则 `^[a-zA-Z0-9_\-.]+$`）：
-> 中文 / 空格 / 括号一律被拒；而且**没有任何接口能创建子目录**（ST 自己调用该接口时只传单段名）。
-> 所以改成「扁平名 + 前缀」模拟层级，双 hash 保证不同会话不会撞名；
-> **真实角色名与会话名记录在文件首行的会话头里**（`charDir` / `chatFile`），
-> 面板日记区块下方也会显示「会话：角色 / 会话名」与完整文件名。
-
-- **一个会话 = 一个 jsonl 文件**，不同角色、不同会话互不影响。
-- **一篇日记 = 文件内的一行**，因此每篇天然独立。
-- 文件第一行是会话头，导入时可据此校验来源会话；正文里的换行以 `\n` 转义保存，保证「一行一篇」不被破坏。
-
-```json
-{"__roleExpansion":"journal","id":"...","title":"...","content":"...","createdAt":0,"updatedAt":0,
- "charName":"...","userName":"...","chatId":"...","sourceMessageIds":[1,2,3],"sourceJournalIds":[],"stateSnapshot":[]}
-```
-
-### 导入 / 导出 / 编辑 / 删除
-
-- **导出**：当前会话全部日记 → 一个 `.jsonl`（首行会话头 + 每篇一行）
-- **导出所选**：只导出勾选的篇；日记条目上的「导出」导出单篇
-- **导入**：选 `.jsonl`，弹窗确认「确定 = 追加到当前会话 / 取消 = 覆盖当前会话的日记」；与现有 id 冲突时自动重新分配 id
-- **编辑**：标题 + 正文弹窗编辑，保存即落盘
-- **删除**：单篇「删除」，或勾选后「删除所选」（二次确认，写入文件即生效）
-
-### 主提示词
-
-面板最下方有一个**默认收起**的区块「**日记主提示词（可自由修改）**」，内容随输入即时保存（防抖 400ms）：
-
-| 变量 | 含义 |
+| 想要 | 怎么做 |
 | --- | --- |
-| `{{chatRange}}` | 勾选的聊天楼层，渲染成 `#索引 说话人: 正文` 形式 |
-| `{{journalRefs}}` | 勾选的参考日记（受「插入日记系统」开关控制） |
-| `{{stateList}}` | 当前状态列表（受「状态并入日记生成提示」开关控制） |
-| `{{char}}` / `{{user}}` 等 | 交给酒馆宏系统替换 |
+| 拆掉某个模块 | 删掉它的整个目录（`modules/journal/` 或 `modules/state/`），刷新页面 |
+| 临时不要某个模块 | 「扩展」设置面板 →「模块」区块里取消勾选（**刷新页面生效**） |
+| 两个都拆掉 | 插件照常启动：面板显示「没有可用模块」，副标题「（无模块）」 |
+| 排查 | `roleExpansion.modules()` → 每个模块的 `installed`（目录在不在）/ `enabled`（启没启用）/ `title` |
 
-> 这个区块**没有**单独的「恢复默认」按钮了。要还原主提示词，用酒馆「扩展」设置面板里的
-> 「恢复默认设置」—— 它按你保存的基准整体还原（见下方「存为默认设置 / 恢复默认设置」）。
+### 自己接一个模块
 
-> 「**插入日记系统**」复选框在「日记 → 日记列表」折叠块的**第一行**：勾选后，日记列表里选中的
-> 日记会被拼进上面的 `{{journalRefs}}`，作为**生成新日记时的参考**。它与「是否把日记注入主聊天」
-> 是两件事 —— 后者由预设里那张卡片的开关决定，见[核心机制](#核心机制)。
+1. 建 `modules/<你的 id>/index.js`，`export default` 一个描述符：`{ id, title, icon, defaults?, create(kernel), settingsBlock?(kernel) }`；
+2. 在 `modules/manifest.json` 的 `modules` 数组里加一条 `{ id, path: "./<你的 id>/index.js", title, icon }`（`path` 相对清单文件）；
+3. 框架启动时 `fetch` 清单并 `import` 你的入口 —— **框架里没有任何模块名**，不需要改 `index.js`。
 
-<details>
-<summary><b>面板布局</b></summary>
-
-日记面板自上而下：**提示词注入**（一行注入状态，详情见「扩展」设置面板）
-→ **新日记**（标题输入 + 生成按钮 + 隔离开关 + 角色设定折叠 + 参考楼层）
-→ **日记列表** → **日记主提示词**（收起）。
-
-「日记列表」折叠块内自上而下：「插入日记系统」复选框（第一行，决定上方的勾选拿来干什么）
-→ 计数/文件行 → 存储说明 → 日记条目列表 → 操作按钮行。
-
-- 「参考聊天楼层」与「日记列表」各自是一个折叠块，用酒馆原生的 `.inline-drawer` 结构，
-  折叠由 `script.js` 里 `$(document).on('click', '.inline-drawer-toggle', …)` 的**委托**处理器负责，
-  所以刷新、重开面板都不会失效（扩展没有自己写一套折叠逻辑去和酒馆抢）。
-- **折叠都有过渡**：内层小折叠走酒馆原生的滑动动画，外层区块（日记 / 角色状态栏 / 各提示词区）
-  是扩展自己做的高度过渡 —— 两者时长都跟随酒馆「用户设置」里的动画时长设置。
-- **箭头方向全站统一为「收起 ↓ / 展开 ↑」**，也就是酒馆原生的 `down` / `up`。
-  外层 `section()`（日记、角色状态栏、各提示词区）用的是同一套 ——
-  两套图标语义并存的话，同一个 `↓` 会一会儿表示展开、一会儿表示收起。
-- **初始 display 由扩展显式写死**：酒馆的 `.inline-drawer-content` 默认就是 `display:none`，
-  而原生处理器只会 toggle，`open: true` 时不主动补上 `display: block`，
-  就会出现「箭头朝上但内容收着」。
-- 日记列表的「**全选**」与「**清空**」是**两个独立按钮**：前者勾选全部，后者取消全部勾选。
-- 每篇日记还有「仅此篇」按钮，可一键改为只注入这一篇。
-
-</details>
-
----
-
-## 角色状态栏
-
-让数值跟着剧情走：维护一组状态（`生命值 8/10`、`好感度 42`…），
-酒馆每次生成前自动把它们告诉模型；模型在回复里用 `<名称>值</名称>` 报告变化，
-扩展负责解析、更新数值，并把标签从正文里剥掉。
-
-- **状态列表**：按「每行 `名称 值`」批量添加，或逐项编辑 / 删除 / 清空，也可从剪贴板导入；
-  「复制为文本」输出纯文本清单，方便自行粘贴到世界书
-- **发送前注入**：每次生成前注入状态清单 —— **深度与角色（system / user / assistant）可调，模板可自由修改**
-- **自动更新**：解析回复里的标签，更新已有项；是否收录新名称由开关决定（见下方准入规则）
-- **按会话隔离**：状态存在当前会话的元数据里，随聊天记录一起保存；换角色、换存档互不影响
-- **与日记联动**：可把当前状态并入日记生成提示（`{{stateList}}`），写日记时作为参考
-
-| 设置 | 说明 |
-| --- | --- |
-| 启用角色状态栏 | 总开关 |
-| 发送前注入状态提示 | 关闭后不再注入（标签解析仍可单独关闭） |
-| 从聊天消息中剥离状态标签 | 关闭后标签仍用于更新数据，但会留在正文里 |
-| 状态并入日记生成提示 | 生成日记时把当前状态塞进 `{{stateList}}` |
-| 只接受已知状态名（默认开） | 模型只能更新状态列表里已有的项；关闭后，回复里的新 `<名称>值</名称>` 会自动加进列表 |
-
-**状态注入提示词**默认内容如下（可自由修改）；注入深度与角色默认 `深度 0 / system`：
-
-```text
-当前状态：
-{{stateList}}
-
-请参考以上状态。在回答时，如有任何状态数值因剧情发生变化，请仅输出发生变化的状态项，并使用 XML 标签格式表示，例如：<生命值>8/10</生命值>。如果没有状态变化，请不要输出任何状态标签。
-```
-
-> 提示词区块本身**没有**单项「恢复默认」按钮：要还原就用酒馆「扩展」设置面板里的
-> 「恢复默认设置」（按你保存的基准整体还原），与「日记主提示词」一致。
-
-### 标签准入规则
-
-状态标签的语法 `<名称>值</名称>` 与 HTML / 思维链标签同形，所以解析时有四道闸：
-
-| 判据 | 作用 |
-| --- | --- |
-| **已在状态列表里的名称** | **一律放行** —— 你自定义的名字不受下面任何限制（13 个汉字的状态名照样能更新） |
-| 长度 ≤ 12（按**码点**计） | 未知名称的第一道闸；常用汉字算 1，emoji 与扩展区汉字也各算 1 |
-| 不含空白与 `- . / \` | 挡掉 HTML 属性残留、路径样式 |
-| 不在 HTML / 思维链 / 工具标签黑名单内 | 挡掉 `<div>`、`<style>`、`<thinking>`、`<analysis>`、`<tool>` 这类 |
-
-**未通过准入的标签不会从正文里删除** —— 它们原样留在消息里，只有通过准入的标签才会被剥掉。
-被忽略的标签名会打到控制台，便于确认模型输出了什么。
-
-> 状态存在会话元数据的 `chatMetadata.roleExpansion.state` 里，由酒馆核心负责读写。
-> 如果你以前用过别的状态插件，数据可能存在 `chatMetadata.sillyTavernState` 键下 ——
-> 本扩展在自身状态为空时会把它**迁入一次**（仅一次；原键保留，不做删除）。
-
----
-
+模块可用的框架设施（`create(kernel)` 拿到的 `kernel`）、返回值约定（框架转发壳按同名调用）、
+启用开关、清单缺省与降级规则见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.1。
 ## 调试与自测
 
-<details>
-<summary><b>控制台 API</b></summary>
+### 控制台 API（框架侧）
 
 ```js
-roleExpansion.settings            // 当前设置（只读引用）
-roleExpansion.ui                  // 运行时状态：journal / selectedJournalIds / selectedFloors / generatingJournal
-roleExpansion.getStateList()      // 当前会话状态数组
-roleExpansion.buildJournalPrompt()// 查看实际拼接出的日记提示词
-roleExpansion.reloadJournal()     // 重新从文件读取日记
-roleExpansion.applyStateInjection()          // 手动重算状态注入
-roleExpansion.readJournalCard()              // 读卡片形态与启停（{ ok, marker, enabled } / { ok:false, reason }）
-roleExpansion.isJournalCardEnabled()         // 读预设卡片的启停状态（注入的权威开关）
-roleExpansion.diagnoseJournalCard()          // 打印卡片在每个 prompt_order 块里的真实位置/开关（排查用）
-roleExpansion.logMarkerSupport()             // 打印「ST 补丁是否生效」，排查卡片没有开关/铅笔
-roleExpansion.probeCardControls()            // 读 DOM：那一行此刻有没有渲染出铅笔/开关（首屏问题看这个）
-roleExpansion.patchPromptManagerFirstRender()// 手动再补一次首屏渲染（幂等，只渲染不写预设）
-roleExpansion.openPanel()                    // 打开面板
-roleExpansion.saveAsDefaults()               // =「存为默认设置」：把当前配置存成新的基准
-roleExpansion.resetToDefaults()              // =「恢复默认设置」：恢复到当前基准
-roleExpansion.clearCustomDefaults()          // 清除自定义基准，回到扩展内置默认值
+roleExpansion.settings             // 当前设置（只读引用）
+roleExpansion.ui                   // 共享运行时状态：各模块把运行时事实放在这里
+roleExpansion.modules()            // 模块清单：installed / enabled / title / icon
+roleExpansion.moduleManifest()     // 清单本身：URL、是否降级、条目
+roleExpansion.openPanel()          // 打开面板
+roleExpansion.saveAsDefaults()     // =「存为默认设置」
+roleExpansion.resetToDefaults()    // =「恢复默认设置」
+roleExpansion.clearCustomDefaults()// 清除自定义基准，回到扩展内置默认
+roleExpansion.logMarkerSupport()   // 运行时提示词源（补丁）是否生效
+roleExpansion.patchPromptManagerFirstRender() // 手动补一次预设列表首屏渲染（幂等，不写预设）
 ```
 
-`diagnoseJournalCard()` 的完整输出：
-
-```js
-roleExpansion.diagnoseJournalCard()
-// → { preset, promptManagerExposed, promptManagerReady,
-//     patch: { openai, toggleAllowed, editAllowed, inspectPreview, sourceRegistered },
-//     controls: { listRendered, found, edit, toggle, enabled },
-//     existsInPrompts, marker, promptKeys,
-//     bindings: [{ character_id, index, enabled, prev, next }], enabled }
-```
-
-`bindings[*].prev / next` 会告诉你卡片前后各是谁，一眼就能看出它现在落在哪个位置。
-
-</details>
+各模块自己的调试入口（日记的 `probeJournalStorage()` / `diagnoseJournalCard()`、状态的 `getStateList()` …）
+写在各自模块文档的「调试入口」一节。
 
 ### 自测脚本
 
 ```bash
-node tools/smoke-test.mjs   # 或 npm test
+npm test            # = node tools/smoke-test.mjs —— 270 项断言，纯 Node，不需要浏览器/酒馆
+npm run test:patch  # 补丁端点 e2e：从 patches/st-journal-store.patch 抽端点在 express 沙盒里真跑
 ```
 
-没有依赖，`node` 直接跑即可；自测会读取仓库自带的 `examples/preset.example.json`
-（找不到时回退到开发机上位于仓库上一级的 `test.json`）。同一套自测在 CI 里对
-Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/workflows/smoke-test.yml)）。
+没有依赖，`node` 直接跑即可；`smoke-test.mjs` 会读取仓库自带的 `examples/preset.example.json`
+（找不到时回退到开发机上仓库上一级的 `test.json`）。同一套自测在 CI 里对 Node 18 / 20 / 22 各跑一遍
+（[`.github/workflows/smoke-test.yml`](.github/workflows/smoke-test.yml)）。
 
-用最小 DOM / ST 桩（含假的提示词管理器、假预设、假角色管理面板）加载 `index.js`，**共 244 项断言**。
+`test:patch` 需要酒馆根目录里的 `node_modules`（默认取开发机路径，或用 `ST_DIR` 指定），
+找不到就打 `SKIP` 退出 0，所以 CI 上不跑也没关系。
 
-<details>
-<summary><b>自测覆盖了什么</b></summary>
-
-- 状态标签解析与剥离、标签更新
-- 日记提示词拼接（`{{chatRange}}` / `{{journalRefs}}` / `{{stateList}}` / `{{char}}`）
-- **首屏时序**：模块求值即注册运行时源；注册成功后**主动补了一次列表渲染**；
-  DOM 探针在列表未渲染时如实报 `false` 且不抛异常
-- **日记面板 UI**：「参考聊天楼层」「日记列表」两块都是酒馆原生 `.inline-drawer`；
-  「全选」「清空」是两个独立按钮；**主提示词编辑框挂在日记面板 section 内**
-- **「注入设置」搬家后的结构**：「提示词注入」区块排在「新日记」之上；
-  「插入日记系统」是「日记列表」折叠体的第一行、紧挨计数行；主面板源码里已无该区块；
-  详情块与「打开预设面板」都在扩展设置面板模板（`index.html`）里，旧的两条提示已删除
-- **单行状态与详情块同源**：`describeJournalCard()` 一次算出两份文案，卡片启停切换时一起变
-- **折叠状态自洽**：展开态显式 `display:block` + `up`，收起态 `display:none` + `down`；
-  外层 `section()` 与内层 `collapsible()` 共用一套箭头语义，不存在两种约定并存
-- **楼层区间选择**：区间行独立一行；空/非数字输入不动已有勾选；`1~2` 命中 `{1,2}`；
-  反向 `2~1` 归一化并把结果写回输入框；越界区间提示且不改动选择
-- **面板结构**：主面板为「日记」「角色状态栏」两块；「状态注入提示词」子区块挂在状态面板内
-- **ST 补丁自身**：含「把运行时源真正 add 进 chatCompletion」的循环与真实 token 计数，
-  且不含 `/api/presets/save`
-- **扩展对预设只读**：卡片不存在时不创建、不碰 `prompts`、不碰 `prompt_order`；
-  刷新状态/勾选变化都不改动预设数组
-- **marker 卡片与开关**：运行时源已注册并返回正确文本；**卡片 `enabled=false` 时运行时源返回空串**；
-  扩展不会把 `enabled` 改回去；用户拖动过的卡片不会被挪回原位
-- **生成日记时不得自注入**：`ui.generatingJournal` 置位期间运行时源返回空串；
-  `quiet` 类型同样不注入（保险丝），而 `swipe` / `regenerate` / `normal` 照常注入；
-  点一次「生成日记」后标志位必定复位（`finally` 生效）
-- **状态模块**：旧 `sillyTavernState` 只迁移一次（原键保持原样）；
-  标签准入（已知名称优先放行、长度按码点计、未通过的标签原样留在正文里）
-- **日记生成通道**：默认走 `generateRaw`，只传 `prompt`，角色设定非空时另加 `systemPrompt`；
-  关掉隔离后回退到 `generateQuietPrompt` 并带上 `skipWIAN: true`；
-  隔离通道同样会剥离 `<thinking>` 推理块后再解析标题
-- **角色设定拼装**：顺序为 描述 → 性格 → 用户设定 → 场景；空字段跳过、全空时不传 `systemPrompt`；
-  覆盖字段非空时整体接管；回退通道不重复注入角色卡
-- **管理器可读性**：`getContext().promptManager` 缺失与「管理器未就绪」两种情形
-  分别给出不同提示与诊断字段
-- **主面板形态**：挂到 `#movingDivs`、宽度取 `--sheldWidth`、最大高度 = 视口 − 工具栏 − 输入栏 − 8、
-  与角色管理同时打开时打上 `roleEx-panel-over-nav` 标记
-- **文件名合规**：单段、满足 `^[a-zA-Z0-9_\-.]+$`（无中文/无路径分隔符）、双 hash 不撞名
-- **标题生成**：四种形式都能正确解析，且不从正文漏进标签
-- jsonl 落盘路径、行结构、单行 JSON 无损还原、读回解析
-
-</details>
-
----
-
+覆盖范围：框架部分（面板结构 / 层级 / 折叠语义 / 模块系统 / 清单驱动 / 默认值快照 / 补丁文本）+
+各模块自己的断言（见模块 DEVELOPMENT 的「自测覆盖」）。
 ## 常见问题
 
 <details open>
@@ -688,40 +394,25 @@ Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/wo
 </details>
 
 <details>
-<summary><b>日记被写成了剧情推进 / 和主聊天最新内容互动</b></summary>
+<summary><b>日记写不出来 / 面板红字说缺补丁</b></summary>
 
-如果你把「隔离生成」关掉了，就会走安静生成通道（`generateQuietPrompt`）—— 它会把
-**整条主聊天记录**一并送给模型，末尾再追加一条「写日记」指令；对倾向延续叙事的模型，
-它就会接着最新剧情往下写。
-
-默认的**隔离生成**（`generateRaw`，只发日记提示词本身）不会有这个问题 ——
-它会把角色卡的描述 / 性格 / 人设 / 场景补成一条 `system` 消息（见上文「角色设定（隔离通道）」）。
-如果关掉了隔离又需要人设细节，可以在「日记主提示词」里手动补一段人设说明。
-
-</details>
-
-<details>
-<summary><b>状态标签不生效</b></summary>
-
-- 标签必须**成对且名称一致**：`<生命值>8/10</生命值>`
-- 默认只接受**已知状态名**。模型在剧情里发明的新名称会被忽略（并保留在正文里）；
-  想让它自动收录，关掉面板里的「只接受已知状态名」，或先手动建一条同名状态
-- 状态注入提示词里已经给了模型格式示例，如果它长期不按格式输出，可以在「状态注入提示词」里把要求写得更硬
+缺 `patches/st-journal-store.patch`（服务端代码，打完要**重启酒馆主进程**），或者当前是群聊。
+两种情况面板都会红字写明原因；细节见 [modules/journal/README.md](modules/journal/README.md)。
 
 </details>
 
 <details>
 <summary><b>ST 升级后一切失效</b></summary>
 
-升级/重装会覆盖 `public/scripts/*.js`，补丁需要重新 `git apply`，然后 `Ctrl+F5`。
+升级/重装会覆盖 `public/scripts/*.js`（以及可能被覆盖的 `src/`），两份补丁都需要重新 `git apply`，
+然后 `Ctrl+F5`（改了服务端那份还要重启酒馆）。
 
 </details>
 
----
-
+模块自身的问题（日记被写成剧情推进、状态标签不生效…）在各自模块 README 的「常见问题」里。
 ## 已知限制
 
-- **预设卡片需要你手动维护**（刻意的取舍：扩展不碰预设文件）。片段见[写预设卡片](#写预设卡片)；
+- **预设卡片需要你手动维护**（刻意的取舍：扩展不碰预设文件）。片段见模块文档；
   改完记得在预设下拉里重新选一次该预设。
 - 如果卡片上看不到启停开关与编辑铅笔，多半是浏览器还在用缓存的旧 `scripts/*.js`：
   确认补丁已应用后 **`Ctrl+F5`**；用 `roleExpansion.logMarkerSupport()` 可确认。
@@ -734,42 +425,46 @@ Node 18 / 20 / 22 各跑一遍（[`.github/workflows/smoke-test.yml`](.github/wo
   **中心间距 = 32 + gap ≈ 58px**；想更紧/更松只改这一个变量（`18px` 约 50px / `34px` 约 66px）。
   该规则带 `:has(.roleEx-top-drawer)` 守卫，只在扩展已装载时生效，并附
   `@supports not selector(:has(*))` 兜底。
-- 日记文件靠 `/api/files/upload` 覆盖写入；同一会话并发写入不排队，正常单人使用无影响。
-- 状态标签的准入规则见[标签准入规则](#标签准入规则)；模型不按格式输出时状态不会更新。
-- 隔离通道（默认）不走酒馆自身的推理剥离流程，扩展会自己剥掉成块的
-  `<thinking>` / `<reasoning>` / `<analysis>`；如果你的推理格式是别的写法
-  （例如用三反引号包裹的推理块），日记正文里可能需要手动清理。
-- 状态数据存在聊天元数据里，**不会写回角色卡**；新开聊天时状态为空。
-
----
-
+- 本扩展只走 `getContext()` 暴露的接口，**不依赖任何后端 server plugin**；
+  唯一需要服务端配合的是日记落盘，由 `patches/st-journal-store.patch` 提供。
+- **模块自己的限制写在模块文档里**：日记（群聊不支持、改名边界、隔离通道的推理剥块只认成块写法…）见
+  [modules/journal/README.md](modules/journal/README.md)；状态（标签准入规则、新聊天状态为空…）见
+  [modules/state/README.md](modules/state/README.md)。
 ## 仓库结构
 
 ```text
 ST-RoleExpansion/
 ├── manifest.json                     酒馆扩展清单（名称 / 版本 / 加载顺序 / 最低客户端版本）
-├── index.js                          全部实现：日记 + 角色状态栏 + 面板 UI
-├── index.html                        酒馆「扩展」列表里的设置卡片模板
+├── index.js                          框架：设置 / 抽屉与主面板 / 扩展设置面板 / 模块系统
+├── modules/                          **整个目录可以删**（见「模块」）
+│   ├── manifest.json                 模块清单（加/删模块只改这里 + 目录，不用动框架）
+│   ├── journal/                      日记模块
+│   │   ├── README.md / DEVELOPMENT.md    日记模块的用户文档 / 开发文档
+│   │   └── index / storage / floors / generate / inject / ui .js
+│   └── state/                        角色状态栏模块
+│       ├── README.md / DEVELOPMENT.md    状态栏模块的用户文档 / 开发文档
+│       └── index / store / inject / ui .js
+├── index.html                        酒馆「扩展」列表里的设置卡片模板（框架部分；模块自己往里挂区块）
 ├── style.css                         全部样式（统一 roleEx- 前缀）
-├── patches/
-│   └── st-marker-prompt.patch        对 ST 核心的最小补丁（运行时提示词源 + 卡片权限）
+├── patches/                          对 ST 核心的两份最小补丁（见「打补丁」）
+│   ├── st-marker-prompt.patch        运行时提示词源 + marker 卡片权限
+│   └── st-journal-store.patch        日记文件读写端点
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，244 项断言）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，270 项断言）
+│   ├── patch-endpoint-test.mjs       补丁端点 e2e（express 沙盒，可选）
 │   └── check-filename.mjs            文件名合规校验器
 ├── examples/
-│   └── preset.example.json           参考预设（已内置日记卡片，可直接导入酒馆）
+│   └── preset.example.json           参考预设（含日记卡片，可直接导入酒馆）
 ├── .github/workflows/smoke-test.yml  CI：Node 18 / 20 / 22 各跑一遍自测
-├── DEVELOPMENT.md                    开发说明：架构 / 数据流 / 踩坑记录（接手开发先看这个）
+├── README.md                         本文：框架 / 安装 / 机制
+├── DEVELOPMENT.md                    框架开发说明：架构 / 补丁 / UI 约定 / 踩坑
 ├── CHANGELOG.md
 ├── LICENSE
 └── .editorconfig / .gitattributes / .gitignore / package.json
 ```
-
----
-
 ## 许可
 
 [MIT](LICENSE) © 2026 TowardsDawn
 
-> `patches/st-marker-prompt.patch` 是针对 SillyTavern 本体（AGPL-3.0）源码的 diff，
+> `patches/*.patch` 是针对 SillyTavern 本体（AGPL-3.0）源码的 diff，
 > 其中含有少量上下文行。SillyTavern 本体不在本仓库内，请按其自身许可获取。

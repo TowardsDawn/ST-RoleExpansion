@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "_comment": "模块清单。加模块 = 往 modules 里加一条 + 放好目录；删模块 = 删目录（这里留着也无害）。path 相对本文件解析。",
+    "_fields": {
+        "id": "必填，模块标识（也是 settings.modules 里的键）",
+        "path": "必填，模块入口，相对本文件",
+        "title": "可选，显示名（模块自己声明的优先）",
+        "icon": "可选，字体图标类名"
+    },
+    "modules": [
+        {
+            "id": "journal",
+            "path": "./journal/index.js",
+            "title": "日记",
+            "icon": "fa-solid fa-book"
+        },
+        {
+            "id": "state",
+            "path": "./state/index.js",
+            "title": "角色状态栏",
+            "icon": "fa-solid fa-heart-pulse"
+        }
+    ]
+}

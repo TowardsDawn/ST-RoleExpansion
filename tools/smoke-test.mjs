@@ -3,7 +3,8 @@
  * 运行： node tools/smoke-test.mjs
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const listeners = new Map();
@@ -199,24 +200,24 @@ globalThis.toastr = { info: () => { }, success: () => { }, warning: () => { }, e
 
 /** 假的「服务器文件系统」，用于验证 jsonl 落盘/读回 */
 const fakeFs = new Map();
+/** 服务端补丁是否可用：false 模拟「没打补丁」—— 酒馆对未知 /api 路由回 404（HTML） */
+let journalEndpointAvailable = true;
+/** 端点调用记录 */
+const journalCalls = [];
 globalThis.fetch = async (url, options = {}) => {
     const u = String(url);
-    if (u === '/api/files/upload') {
-        const body = JSON.parse(options.body);
-        fakeFs.set(body.name, Buffer.from(body.data, 'base64').toString('utf8'));
-        return { ok: true, status: 200, text: async () => '', json: async () => ({ path: body.name }) };
-    }
-    if (u === '/api/files/delete') {
-        const body = JSON.parse(options.body);
-        fakeFs.delete(String(body.path).replace(/^user\/files\//, ''));
-        return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
-    }
-    if (u.startsWith('/user/files/')) {
-        const path = decodeURIComponent(u.slice('/user/files/'.length));
-        if (!fakeFs.has(path)) {
-            return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
+    if (u.startsWith('/api/role-expansion/journal/')) {
+        const body = JSON.parse(options.body || '{}');
+        journalCalls.push({ route: u, body });
+        if (!journalEndpointAvailable) {
+            return { ok: false, status: 404, text: async () => 'Cannot POST ' + u, json: async () => ({}) };
         }
-        return { ok: true, status: 200, text: async () => fakeFs.get(path), json: async () => ({}) };
+        const key = `${body.avatar_url}|${body.file_name}`;
+        if (u.endsWith('/get')) {
+            return { ok: true, status: 200, text: async () => '', json: async () => ({ exists: fakeFs.has(key), text: fakeFs.get(key) || '' }) };
+        }
+        fakeFs.set(key, String(body.text));
+        return { ok: true, status: 200, text: async () => '', json: async () => ({ ok: true }) };
     }
     return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
 };
@@ -286,7 +287,9 @@ globalThis.SillyTavern = {
         name1: '我',
         name2: '角色',
         characterId: 0,
-        characters: [{ name: '角色', chat: '角色/测试会话.jsonl' }],
+        // 群聊时为 selected_group；日记按角色目录存放，群聊没有角色目录（见 journalAvailability）
+        groupId: null,
+        characters: [{ name: '角色', avatar: '测试角色.png', chat: '角色/测试会话.jsonl' }],
         getCharacterCardFields: () => ({ ...cardFields }),
         getCurrentChatId: () => '角色/测试会话.jsonl',
         saveMetadata: () => { },
@@ -353,6 +356,20 @@ function check(label, actual, expected) {
         console.log(`ok    ${label}`);
     }
 }
+
+// 模块清单是 fetch 来的（浏览器里走酒馆的扩展路由）。自测在 Node 里跑，
+// 这里把 file:// 的 fetch 接到 fs 上 —— 被测代码本身不需要任何 Node 专用分支。
+// ⚠️ 必须**链在**上面那个 ST 桩之后：file:// 自己接 fs，其余（/api/files/*）原样转发，
+//    否则会把桩顶掉，落盘相关断言会集体假失败。
+const stFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+    const url = input instanceof URL ? input : new URL(String(input), 'http://localhost/');
+    if (url.protocol === 'file:') {
+        const text = readFileSync(fileURLToPath(url), 'utf8');
+        return { ok: true, status: 200, json: async () => JSON.parse(text), text: async () => text };
+    }
+    return stFetch(input, init);
+};
 
 await import('../index.js');
 // ⚠️ 关键时序：运行时源必须在模块求值时就注册好，
@@ -505,11 +522,26 @@ check('normal 生成时运行时源恢复正文', runtimeSources.get('roleExpans
 
 // 静态回归：假声明已移除、判据方向是黑名单
 const extensionSrc = readFileSync(fileURLToPath(new URL('../index.js', import.meta.url)), 'utf8');
+
+// 模块被拆出去之后，一部分「源码级」断言必须连模块一起看（否则一拆就假失败）。
+// 目录整体不存在（全拆了）也要能跑，所以这里容错。
+let moduleSrc = '';
+try {
+    const moduleDir = fileURLToPath(new URL('../modules', import.meta.url));
+    for (const rel of readdirSync(moduleDir, { recursive: true })) {
+        if (String(rel).endsWith('.js')) {
+            moduleSrc += readFileSync(join(moduleDir, String(rel)), 'utf8');
+        }
+    }
+} catch (e) {
+    moduleSrc = '';
+}
+const allSrc = extensionSrc + moduleSrc;
 check('已移除从未被读取的 TRIGGER 假声明', extensionSrc.includes("TRIGGER: ['normal']"), false);
 check('生成类型黑名单存在且只含 quiet',
-    /const NO_JOURNAL_INJECT_TYPES = new Set\(\['quiet'\]\)/.test(extensionSrc), true);
+    /const NO_JOURNAL_INJECT_TYPES = new Set\(\['quiet'\]\)/.test(allSrc), true);
 check('写日记时置位标志位并用 finally 复位',
-    extensionSrc.includes('ui.generatingJournal = true') && extensionSrc.includes('ui.generatingJournal = false'), true);
+    allSrc.includes('ui.generatingJournal = true') && allSrc.includes('ui.generatingJournal = false'), true);
 
 // ---- 状态文案：区分「管理器未就绪 / 预览未就绪 / 预览就绪」 ----
 const fakeHint = makeEl('div');
@@ -582,24 +614,31 @@ check('状态注入正文含状态', captured.RoleExpansion_State?.value.include
 // ---- jsonl 落盘往返（文件名必须是「单段」且符合 ST 的 ^[a-zA-Z0-9_\-.]+$） ----
 const identity = api.currentChatIdentity();
 const ST_NAME_RE = /^[a-zA-Z0-9_\-.]+$/;
-check('文件名是单段（不含路径分隔符）', identity.path.includes('/'), false);
-check('文件名符合 ST 的校验正则', ST_NAME_RE.test(identity.path), true);
-check('文件名带固定前缀便于归组', identity.path.startsWith('RoleExpansion_journal_'), true);
+check('文件名是单段（不含路径分隔符）', identity.fileName.includes('/'), false);
+check('文件名符合 ST 的校验正则', ST_NAME_RE.test(identity.fileName), true);
+check('文件名带固定前缀便于归组', identity.fileName.startsWith('RoleExpansion_journal_'), true);
 check('文件名带角色/会话双 hash（保证互不冲突）',
-    /^RoleExpansion_journal_c_[0-9a-f]{8}_j_[0-9a-f]{8}\.jsonl$/.test(identity.path), true);
+    /^RoleExpansion_journal_c_[0-9a-f]{8}_j_[0-9a-f]{8}\.jsonl$/.test(identity.fileName), true);
 check('两个不同会话会落到不同文件', (() => {
-    const a = identity.path;
+    const a = identity.fileName;
     const b = `RoleExpansion_journal_c_${identity.charSlug.replace('c_', '')}_j_deadbeef.jsonl`;
     return a !== b;
 })(), true);
-check('文件名以 .jsonl 结尾', identity.path.endsWith('.jsonl'), true);
+check('文件名以 .jsonl 结尾', identity.fileName.endsWith('.jsonl'), true);
 check('会话名仍保留可读信息（记录在文件首行）', identity.charDir === '角色' && identity.chatFile === '测试会话', true);
+check('identity 不再有「相对 user/files 的路径」这个概念', 'path' in identity, false);
+check('落点文案 = 角色聊天目录下的私有子目录',
+    api.journalPathText(identity.fileName), `chats/测试角色/_RoleExpansion/journals/${identity.fileName}`);
 
-const safePath = identity.path;
+const safeKey = `测试角色.png|${identity.fileName}`;
 api.ui.journal = [];
 await api.addJournalEntry({ content: '# 标题B\n第一行正文\n第二行正文', sourceMessageIds: [0, 2] });
-const fileText = fakeFs.get(safePath) || '';
-check('落盘位置正确', Array.from(fakeFs.keys())[0], safePath);
+const fileText = fakeFs.get(safeKey) || '';
+check('落盘走补丁端点 /api/role-expansion/journal/save',
+    journalCalls.some(c => c.route === '/api/role-expansion/journal/save'), true);
+check('落盘时带 avatar_url（服务端据此推导角色目录）',
+    journalCalls.find(c => c.route === '/api/role-expansion/journal/save')?.body.avatar_url, '测试角色.png');
+check('落盘 key = 头像 + 文件名', Array.from(fakeFs.keys())[0], safeKey);
 check('会话头记录了可读会话名',
     JSON.parse(fileText.trim().split('\n')[0]).chatFile, '测试会话');
 check('jsonl 行数 = 1 行会话头 + 1 篇日记', fileText.trim().split('\n').length, 2);
@@ -684,12 +723,16 @@ check('补丁：不再把预览 token 写成 undefined', patchText.includes('pre
 check('补丁：没有引入 /api/presets/save（扩展侧对预设只读）', patchText.includes('/api/presets/save'), false);
 
 // ---- 「注入设置」区块搬家：主面板不再有它，详情与跳转都进了扩展设置面板 ----
-check('主面板不再有「注入设置」区块（整块已搬走）', extensionSrc.includes("text: '注入设置'"), false);
-check('「打开预设面板」的接线留在 index.js（openPresetPanel）',
-    extensionSrc.includes('function openPresetPanel()'), true);
+check('主面板不再有「注入设置」区块（整块已搬走）', allSrc.includes("text: '注入设置'"), false);
+check('「打开预设面板」的接线还在（模块里：journal/ui.js 的 openPresetPanel）',
+    allSrc.includes('function openPresetPanel()'), true);
 const templateHtml = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8');
-check('扩展设置面板模板里有详情块 + 打开预设面板按钮',
-    templateHtml.includes('id="roleEx-preset-card-hint"') && templateHtml.includes('id="roleEx-setting-open-preset"'), true);
+check('扩展设置面板模板只留一个「模块区块」容器（内容由模块自己建）',
+    templateHtml.includes('id="roleEx-setting-module-blocks"'), true);
+check('模板里没有硬编码的日记卡片诊断块（模块不在时不该残留「检测中…」）',
+    templateHtml.includes('roleEx-preset-card-hint') || templateHtml.includes('roleEx-setting-open-preset'), false);
+check('日记模块自带 settingsBlock（卡片诊断 + 打开预设面板都在模块里）',
+    moduleSrc.includes('settingsBlock: () =>') && moduleSrc.includes("id: 'roleEx-setting-open-preset'"), true);
 check('扩展设置面板不再保留旧的两条提示（已并入详情块，避免重复）',
     templateHtml.includes('roleEx-setting-journal-state') || templateHtml.includes('roleEx-setting-patch-state'), false);
 
@@ -843,7 +886,8 @@ const storageNote = registry.get('roleEx-storage-note');
 check('存储说明在日记面板里', !!storageNote, true);
 check('存储说明不含版本号', /版本|version/i.test(String(storageNote?.innerHTML ?? '')), false);
 const noteText = String(storageNote?.innerHTML ?? '');
-check('存储说明保留文件路径与「一篇一行」', noteText.includes('user/files/RoleExpansion_journal') && noteText.includes('一篇日记一行'), true);
+check('存储说明指向角色聊天目录下的私有子目录',
+    noteText.includes('chats/&lt;角色&gt;/_RoleExpansion/journals/RoleExpansion_journal') && noteText.includes('一篇日记一行'), true);
 const scrollEl = registry.get('roleEx-scroll');
 check('主面板里只剩「日记」「角色状态栏」两块（不再有关于面板）', scrollEl?.children?.length, 2);
 
@@ -1134,6 +1178,34 @@ check('被挡下的长标签保留在正文里',
     chat[chat.length - 1].mes.includes('<这是一个非常长的未知标签名称>值</这是一个非常长的未知标签名称>'), true);
 api.settings.stateOnlyKnownNames = true;
 
+// ---- 模块系统：日记 / 角色状态栏都是可拆模块 ----
+// 「可拆」的可验证部分是：模块清单、启用开关、以及模块不在时框架给的空壳（不抛）。
+// 真正「删目录」的验证在 DEVELOPMENT.md §7 的手工清单里（自测桩里没法删文件）。
+const moduleList = api.modules();
+check('模块清单：日记 / 角色状态栏都已加载并启用',
+    moduleList.filter(m => m.installed && m.enabled).map(m => m.id).sort().join(','), 'journal,state');
+check('模块清单带 installed / enabled / title（拆掉模块时 installed 会变 false）',
+    moduleList.every(m => typeof m.installed === 'boolean' && typeof m.enabled === 'boolean' && 'title' in m), true);
+check('settings.modules 是模块启用开关表（默认 {} = 全部启用）',
+    JSON.stringify(api.settings.modules), '{}');
+
+// ---- 清单文件驱动：加模块只改 modules/manifest.json，不用动框架代码 ----
+// 读不到清单也要能跑到结尾（那时框架会走降级路径，这几条断言会红，但不该把测试打崩）
+let manifestJson = null;
+try {
+    manifestJson = JSON.parse(readFileSync(fileURLToPath(new URL('../modules/manifest.json', import.meta.url)), 'utf8'));
+} catch (e) {
+    manifestJson = null;
+}
+check('modules/manifest.json 可解析，条目与已加载模块一致',
+    manifestJson ? JSON.stringify(manifestJson.modules.map(m => m.id).sort()) : 'manifest-missing',
+    JSON.stringify(moduleList.map(m => m.id).sort()));
+const manifestInfo = api.moduleManifest();
+check('清单快照：url 指向 modules/manifest.json，且没走降级路径',
+    manifestInfo.url.endsWith('/modules/manifest.json') && manifestInfo.degraded === false, true);
+check('框架源码里不再硬编码任何模块导入路径（清单驱动）',
+    /modules\/journal\/index\.js|modules\/state\/index\.js/.test(extensionSrc), false);
+
 // ---- 面板里不再有任何单项「恢复默认」按钮 ----
 // 日记主提示词 / 状态注入提示词两处都删了，统一走扩展设置面板的「恢复默认设置」。
 // 注：状态注入提示词那一处的按钮其实**一直挂在 DOM 里**，只是被不换行的 flex 行顶出面板、
@@ -1175,5 +1247,40 @@ check('扩展设置面板模板里有「存为默认设置」，且排在「恢�
     templateHtml.indexOf('roleEx-setting-save-defaults') !== -1
     && templateHtml.indexOf('roleEx-setting-save-defaults') < templateHtml.indexOf('id="roleEx-setting-reset"'), true);
 
+// ---- 日记存储：缺补丁 / 群聊 → 明确不可用，不做回退 ----
+journalEndpointAvailable = false;
+const fsSizeBefore = fakeFs.size;
+await api.reloadJournal();
+check('缺补丁：原因判为 patch-missing', api.ui.journalError, 'patch-missing');
+check('缺补丁：文案指向补丁文件',
+    api.journalReasonText(api.ui.journalError).includes('patches/st-journal-store.patch'), true);
+check('缺补丁：提示块打上 roleEx-warn',
+    registry.get('roleEx-storage-hint')?.classList.contains('roleEx-warn'), true);
+check('缺补丁：不会偷偷写回旧位置（文件数不变）', fakeFs.size, fsSizeBefore);
+const probeBad = await api.probeJournalStorage();
+check('缺补丁：探针如实报不可用', probeBad.ok, false);
+journalEndpointAvailable = true;
+
+// 群聊：没有角色目录 → 直接判不可用（连请求都不该发）
+const savedCtx = globalThis.SillyTavern.getContext;
+globalThis.SillyTavern.getContext = () => ({ ...savedCtx(), groupId: 'group-1' });
+check('群聊：可用性判为 group', api.journalAvailability(), { ok: false, reason: 'group' });
+const callsBeforeGroup = journalCalls.length;
+await api.reloadJournal();
+check('群聊：日记不可用原因是 group', api.ui.journalError, 'group');
+check('群聊：不为不可用的场景发请求', journalCalls.length, callsBeforeGroup);
+const probeGroup = await api.probeJournalStorage();
+check('群聊：探针如实报不可用', probeGroup.ok, false);
+globalThis.SillyTavern.getContext = savedCtx;
+await api.reloadJournal();
+check('切回单聊：错误状态清空', api.ui.journalError, null);
+check('切回单聊：日记读得回来', api.ui.journal.length, 1);
+
+// ---- 源码层面：日记不再走 /api/files，落点是补丁端点 ----
+check('源码里不再有 files 写入接口调用',
+    /fetch\([^)]*\/api\/files\//.test(allSrc), false);
+check('源码里出现补丁端点前缀',
+    allSrc.includes('/api/role-expansion/journal'), true);
+check('源码注释里点明需要补丁', allSrc.includes('st-journal-store.patch'), true);
 console.log(failed ? `\n${failed} / ${total} 项失败` : `\n全部通过（共 ${total} 项断言）`);
 process.exit(failed ? 1 : 0);
