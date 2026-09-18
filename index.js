@@ -1,17 +1,20 @@
 /**
  * ST-RoleExpansion —— 角色扩展
  *
- * 面向 SillyTavern 1.13.2+ 的前端扩展（纯 ESM，无构建步骤）。
+ * 面向 SillyTavern ≥ 1.18.0 的前端扩展（纯 ESM，无构建步骤）。
  *
- * 模块：
- *   1. 日记（Journal）
+ * 模块（详细文档在 modules/<id>/README.md 与 modules/<id>/DEVELOPMENT.md）：
+ *   1. 推特（Twitter）
+ *      - 仿推特主页；资料区用户编辑、推文正文由模型用 <推文>…</推文> 输出、四个数字随机后固化
+ *      - 需要补丁 patches/st-twitter-assets.patch（模块私有资源读写）；不依赖其它模块
+ *   2. 日记（Journal）
  *      - 使用 ST 当前配置的 API（默认走 generateRaw 隔离通道，不写入主聊天）
  *      - 可自由勾选主聊天楼层作为参考
  *      - 一篇 = 一行 JSONL，会话级文件隔离
  *      - 可选把选中的日记注入主聊天（深度 0 / assistant 角色，同 Persona Description 机制）
  *      - 可选把选中的日记注入日记生成提示词
  *      - 主提示词可自由修改、支持 jsonl 导入导出、按篇删除
- *   2. 角色状态栏（State）
+ *   3. 角色状态栏（State）
  *      - 状态列表维护、生成前注入、<名称>值</名称> 标签的解析与剥离（按会话隔离）
  *      - 注入提示词、注入深度与角色均可自由调整
  *      - 可选把当前状态并入日记生成提示词
@@ -260,17 +263,33 @@ function baselineSettings() {
     return customDefaults ? Object.assign(base, clone(customDefaults)) : base;
 }
 
+/**
+ * 用新内容**就地**替换 settings 的内容（保持对象身份不变）。
+ *
+ * ⚠️ 绝不能写成 settings = xxx 重新绑定：模块在 create(kernel) 时会把 `get settings()` 解构一次，
+ * 那一步拿到的就是当时那个对象。一旦这里换对象，所有模块会继续读**旧对象** ——
+ * 症状是「恢复默认设置」之后模块侧的设置改动（勾选框、提示词、开关）全部不生效，而且不报错。
+ * 所以只改内容、不换对象。
+ */
+function replaceSettings(next) {
+    for (const key of Object.keys(settings)) {
+        delete settings[key];
+    }
+    Object.assign(settings, next);
+    return settings;
+}
+
 function loadSettings() {
     const c = ctx();
     const container = c?.extensionSettings;
     if (!container) {
-        settings = baselineSettings();
+        replaceSettings(baselineSettings());
         return settings;
     }
     // 自定义基准必须在合并之前读出来 —— 它决定「默认值」到底是什么
     customDefaults = container[CUSTOM_DEFAULTS_KEY] || null;
     const stored = container[MODULE_NAME];
-    settings = Object.assign(baselineSettings(), stored || {});
+    replaceSettings(Object.assign(baselineSettings(), stored || {}));
     // 顺手剔除历史版本的废弃键（否则它们会被 Object.assign 带回内存对象，并一直留在 settings.json 里）
     let droppedDeprecated = 0;
     for (const key of DEPRECATED_SETTINGS_KEYS) {
@@ -333,7 +352,7 @@ function clearCustomDefaults() {
 
 /** 恢复到当前基准（内置默认，或用户「存为默认设置」的快照） */
 function resetToDefaults() {
-    settings = baselineSettings();
+    replaceSettings(baselineSettings());
     const c = ctx();
     if (c?.extensionSettings) {
         c.extensionSettings[MODULE_NAME] = settings;
@@ -518,6 +537,141 @@ async function probeJournalStorage() {
 }
 
 // ============================================================================
+// ============================================================================
+// 模块私有资源存储（/api/role-expansion/asset/*，需要 patches/st-twitter-assets.patch）
+// ============================================================================
+// 位置：<user>/chats/<角色目录>/_RoleExpansion/<sub>/<name>
+//   sub  模块名（服务端白名单，目前只有 'twitter'）
+//   name 单段 ASCII 文件名，后缀在白名单里（.jsonl 存文本，图片后缀存 base64）
+// 这是**框架级的存储通道**：任何模块想在自己的子目录里放文件都可以用，当前消费方是「推特」模块
+// （自己的 jsonl + 头像 + 横幅）。与日记端点共用同一个 mount，只是路由前缀不同。
+// ⚠️ 缺补丁时明确报错（reason = patch-missing），不做回退；群聊 / 没选角色时本地就判不可用。
+
+/** 资源端点前缀（与日记端点同一个 mount） */
+const ASSET_ENDPOINT = '/api/role-expansion/asset';
+
+/** 失败原因 → 给人看的说明（UI 与 Toast 共用一份文案） */
+function assetReasonText(reason) {
+    switch (String(reason ?? '')) {
+        case 'group':
+            return '群聊不支持：这类文件按角色目录存放，群聊没有角色目录。';
+        case 'no-character':
+            return '还没有选择角色（角色目录未知）。';
+        case 'patch-missing':
+            return '缺服务端补丁：对酒馆执行 git apply patches/st-twitter-assets.patch 并重启。';
+        case 'invalid-path':
+            return '服务端拒绝了路径（模块名、文件名或角色头像名不合法）。';
+        case 'too-large':
+            return '文件超过服务端上限（文本 16MB / 图片 8MB）。';
+        case 'network':
+            return '资源接口请求失败（网络错误）。';
+        default:
+            return '资源读写失败：' + String(reason ?? '未知原因');
+    }
+}
+
+/** 资源文件在磁盘上的位置（给人看；不可用时返回空串） */
+function assetPathText(sub, name) {
+    const avail = journalAvailability();
+    if (!avail.ok) {
+        return '';
+    }
+    return 'chats/' + String(avail.avatarUrl).replace(/\.png$/i, '') + '/' + JOURNAL_DIR_NAME + '/' + sub + '/' + name;
+}
+
+/**
+ * 调一次资源端点。与 journalRequest 同构：404 = 缺补丁，400 = 路径被拒，413 = 超限。
+ * @returns {Promise<{ ok: true, data: any } | { ok: false, reason: string }>}
+ */
+async function assetRequest(route, body) {
+    const avail = journalAvailability();
+    if (!avail.ok) {
+        return { ok: false, reason: avail.reason };
+    }
+
+    let resp = null;
+    try {
+        resp = await fetch(ASSET_ENDPOINT + '/' + route, {
+            method: 'POST',
+            headers: requestHeaders(),
+            body: JSON.stringify(Object.assign({ avatar_url: avail.avatarUrl }, body)),
+        });
+    } catch (e) {
+        logError('资源接口请求失败', route, e);
+        return { ok: false, reason: 'network' };
+    }
+
+    if (resp.status === 404) {
+        return { ok: false, reason: 'patch-missing' };
+    }
+    if (!resp.ok) {
+        if (resp.status === 400) {
+            return { ok: false, reason: 'invalid-path' };
+        }
+        if (resp.status === 413) {
+            return { ok: false, reason: 'too-large' };
+        }
+        return { ok: false, reason: 'http-' + resp.status };
+    }
+
+    try {
+        return { ok: true, data: await resp.json() };
+    } catch (e) {
+        return { ok: false, reason: 'bad-response' };
+    }
+}
+
+/** 读文本文件（.jsonl）：{ ok: true, text, exists } / { ok: false, reason } */
+async function readAssetText(sub, name) {
+    const res = await assetRequest('get', { sub, name });
+    if (!res.ok) {
+        return res;
+    }
+    return { ok: true, text: String(res.data?.text ?? ''), exists: !!res.data?.exists };
+}
+
+/** 读图片：{ ok: true, base64, mime, exists } / { ok: false, reason } */
+async function readAssetBinary(sub, name) {
+    const res = await assetRequest('get', { sub, name });
+    if (!res.ok) {
+        return res;
+    }
+    return { ok: true, base64: String(res.data?.base64 ?? ''), mime: String(res.data?.mime ?? ''), exists: !!res.data?.exists };
+}
+
+/** 写文本文件：{ ok: true } / { ok: false, reason } */
+async function writeAssetText(sub, name, text) {
+    const res = await assetRequest('save', { sub, name, text: String(text ?? '') });
+    return res.ok ? { ok: true } : res;
+}
+
+/** 写图片（base64 或 data URL）：{ ok: true } / { ok: false, reason } */
+async function writeAssetBinary(sub, name, base64) {
+    const res = await assetRequest('save', { sub, name, base64: String(base64 ?? '') });
+    return res.ok ? { ok: true } : res;
+}
+
+/** 删除资源文件：{ ok: true, removed } / { ok: false, reason } */
+async function deleteAssetFile(sub, name) {
+    const res = await assetRequest('delete', { sub, name });
+    if (!res.ok) {
+        return res;
+    }
+    return { ok: true, removed: !!res.data?.removed };
+}
+
+/** 资源存储探针（控制台排查用，只读，不写任何东西） */
+async function probeAssetStorage(sub) {
+    const avail = journalAvailability();
+    if (!avail.ok) {
+        return { ok: false, reason: avail.reason, text: assetReasonText(avail.reason) };
+    }
+    const probeName = 'RoleExpansion_probe.jsonl';
+    const res = await readAssetText(sub, probeName);
+    return res.ok
+        ? { ok: true, reason: null, text: '资源存储可用：' + assetPathText(sub, probeName) }
+        : { ok: false, reason: res.reason, text: assetReasonText(res.reason) };
+}
 // 日记 / 状态 运行时状态
 // ============================================================================
 
@@ -1071,6 +1225,7 @@ async function initExtensionSettingsPanel(attempt = 0) {
 
 function callJournal(fn, ...args) { return callModule('journal', fn, ...args); }
 function callState(fn, ...args) { return callModule('state', fn, ...args); }
+function callTwitter(fn, ...args) { return callModule('twitter', fn, ...args); }
 
 // —— 日记模块 ——
 function ensureRuntimePromptSource(...a) { return callJournal('ensureRuntimePromptSource', ...a); }
@@ -1099,6 +1254,14 @@ function renderStateList(...a) { return callState('renderStateList', ...a); }
 function onCharacterMessageReceived(...a) { return callState('onCharacterMessageReceived', ...a); }
 function getStateList(...a) { return callState('getStateList', ...a); }
 function getMetaRoot(...a) { return callState('getMetaRoot', ...a); }
+
+// —— 推特模块 ——
+function onTwitterMessage(...a) { return callTwitter('onCharacterMessageReceived', ...a); }
+function reloadTwitter(...a) { return callTwitter('reloadTwitter', ...a); }
+function renderTwitter(...a) { return callTwitter('renderTwitter', ...a); }
+function describeTwitter(...a) { return callTwitter('describeTwitter', ...a); }
+function toggleTweetAction(...a) { return callTwitter('toggleTweetAction', ...a); }
+function toggleTwitterFollow(...a) { return callTwitter('toggleTwitterFollow', ...a); }
 
 // ============================================================================
 // 模块系统：日记 / 角色状态栏都是「可拆模块」
@@ -1363,9 +1526,12 @@ const kernel = {
     // 共享运行时（ui.journal / ui.generatingJournal / ui.currentGenerationType …）：只放**框架与模块都要读**的事实；
     // 单模块自用的字段放在模块自己那侧，别往这里塞（历史上有过 ui.stateList 这种没有任何读者的字段）
     ui,
-    // 日记文件存储（走 /api/role-expansion，需要补丁）
+    // 日记文件存储（走 /api/role-expansion/journal，需要 st-journal-store 补丁）
     journalAvailability, journalPathText, journalReasonText, readJournalFile, writeJournalFile,
     probeJournalStorage,
+    // 模块私有资源存储（走 /api/role-expansion/asset，需要 st-twitter-assets 补丁）
+    assetReasonText, assetPathText, readAssetText, readAssetBinary, writeAssetText, writeAssetBinary,
+    deleteAssetFile, probeAssetStorage,
     // 模块系统
     service,
 };
@@ -1393,6 +1559,7 @@ function bindEvents() {
         applyStateInjection();
         // 面板没打开时也把日记读进来，保证预设卡片随时有内容可提供
         scheduleBackgroundJournalLoad();
+        reloadTwitter();
     });
 
     eventSource.on(eventTypes.MESSAGE_RECEIVED, () => {
@@ -1400,6 +1567,11 @@ function bindEvents() {
             onCharacterMessageReceived();
         } catch (e) {
             logError('state parse failed', e);
+        }
+        try {
+            onTwitterMessage();
+        } catch (e) {
+            logError('twitter capture failed', e);
         }
     });
 
@@ -1437,6 +1609,7 @@ function bindEvents() {
         adoptCardStateFromPreset();
         updatePresetCardHint();
         scheduleBackgroundJournalLoad();
+        reloadTwitter();
     });
 
     // 生成结束后刷新一次状态文案（此时预览数据才建立）
@@ -1554,6 +1727,15 @@ globalThis.roleExpansion = {
     journalPathText,
     journalReasonText,
     probeJournalStorage,
+    /** 模块私有资源：位置文案与只读探针（排查头像/横幅写不进去） */
+    assetPathText,
+    probeAssetStorage,
+    /** 推特模块（模块不在时是空壳） */
+    reloadTwitter,
+    renderTwitter,
+    describeTwitter,
+    toggleTweetAction,
+    toggleTwitterFollow,
     // —— 模块提供的（模块不在时是空壳：调用返回 undefined，不抛）——
     // 想确认某个名字到底有没有，看 roleExpansion.modules() 里的 installed / enabled
     reloadJournal,

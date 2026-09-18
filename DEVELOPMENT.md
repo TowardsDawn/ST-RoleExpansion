@@ -10,12 +10,12 @@
 
 | | |
 | --- | --- |
-| 是什么 | SillyTavern 前端扩展：**日记（Journal）** + **角色状态栏（State）** |
-| 形态 | 纯前端原生 ESM，**没有任何构建步骤** —— `index.js` 由酒馆直接 `import`；两个功能是 `modules/` 下的**可拆模块**（§1.1） |
-| 代码规模 | 框架 `index.js` ≈ 1580 行 + 模块 `modules/` ≈ 2460 行、`style.css` ≈ 760 行、`index.html` 60 行 |
-| 运行前提 | SillyTavern ≥ 1.18.0 **且**已应用 `patches/` 下的两份补丁（`st-marker-prompt` + `st-journal-store`） |
-| 后端 | 无自有后端。持久化 = `chatMetadata`（状态） + 补丁新增的 `/api/role-expansion/journal/*`（日记） |
-| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 270 项断言） |
+| 是什么 | SillyTavern 前端扩展：**日记（Journal）** + **角色状态栏（State）** + **推特（Twitter）** |
+| 形态 | 纯前端原生 ESM，**没有任何构建步骤** —— `index.js` 由酒馆直接 `import`；三个功能都是 `modules/` 下的**可拆模块**（§1.1） |
+| 代码规模 | 框架 `index.js` ≈ 1760 行；模块 ≈ 4300 行（twitter 1860 / journal 1830 / state 615）、`style.css` ≈ 800 行、`index.html` 47 行 |
+| 运行前提 | SillyTavern ≥ 1.18.0 **且**已应用 `patches/` 下的三份补丁（`st-marker-prompt` → `st-journal-store` → `st-twitter-assets`，顺序不能反） |
+| 后端 | 无自有后端。持久化 = `chatMetadata`（状态） + 补丁新增的 `/api/role-expansion/journal/*`（日记 jsonl）与 `/api/role-expansion/asset/*`（模块私有子目录：推特 jsonl + 头像 / 横幅 / 推文配图） |
+| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 394 项断言）；`npm run test:patch` 另跑两份补丁端点 |
 
 接手时最该先搞明白的三件事：
 
@@ -30,6 +30,7 @@
 | 路径 | 作用 | 运行必需 |
 | --- | --- | :---: |
 | `index.js` | **框架**：设置/存储/抽屉/面板/扩展设置/模块系统，末尾挂 `globalThis.roleExpansion` | ✅ |
+| `modules/twitter/` | 推特模块（6 个 js + 自己的 `README.md` / `DEVELOPMENT.md`）；**整个目录删掉 = 没有推特功能** | ⭕ 可拆 |
 | `modules/journal/` | 日记模块（6 个 js + 自己的 `README.md` / `DEVELOPMENT.md`）；**整个目录删掉 = 没有日记功能** | ⭕ 可拆 |
 | `modules/state/` | 角色状态栏模块（4 个 js + 自己的 `README.md` / `DEVELOPMENT.md`）；**整个目录删掉 = 没有状态栏功能** | ⭕ 可拆 |
 | `modules/<id>/README.md` | **模块的用户文档**：怎么用、有哪些开关、有什么限制 | — |
@@ -39,8 +40,10 @@
 | `manifest.json` | 扩展元数据；`minimum_client_version: 1.18.0` | ✅ |
 | `patches/st-marker-prompt.patch` | 给酒馆打的最小补丁：运行时提示词源 + marker 卡片权限（3 个文件、12 个 hunk） | ⚠️ 需手动应用 |
 | `patches/st-journal-store.patch` | 给酒馆打的最小补丁：日记文件读写端点（新增 1 个文件 + 挂载 1 行） | ⚠️ 需手动应用，**改服务端要重启酒馆** |
+| `patches/st-twitter-assets.patch` | 给酒馆打的最小补丁：模块私有资源读写端点（新增 1 个文件 + 挂载 1 行） | ⚠️ 同上，且**必须打在 `st-journal-store` 之后** |
 | `tools/smoke-test.mjs` | 离线自测：stub DOM + ST 桩 → 加载真 `index.js` | — |
-| `tools/patch-endpoint-test.mjs` | 补丁端点 e2e：从 patch 抽出端点在 express 沙盒里真跑（可 SKIP） | — |
+| `tools/patch-endpoint-test.mjs` | 日记端点 e2e：从 patch 抽出端点在 express 沙盒里真跑（可 SKIP） | — |
+| `tools/patch-asset-test.mjs` | 资源端点 e2e：读写删 / 覆盖 / 白名单 / 穿越 / 体积上限 | — |
 | `tools/check-filename.mjs` | 单文件排查酒馆的文件名校验 | — |
 | `examples/preset.example.json` | 示例预设（含 marker 卡片），自测会校验一致性 | — |
 | `README.md` / `CHANGELOG.md` | 用户文档 / 版本记录 | — |
@@ -48,11 +51,17 @@
 | `package.json` | `private: true`，只用来定义 `npm test` | — |
 | `.editorconfig` / `.gitattributes` / `.gitignore` / `LICENSE` | 仓库配套 | — |
 
-### 1.1 模块系统：日记 / 角色状态栏都是「插件的插件」
+### 1.1 模块系统：推特 / 日记 / 角色状态栏都是「插件的插件」
 
 ```
 index.js                       框架：kernel + 抽屉/主面板/扩展设置面板 + 模块加载 + 事件分发
 modules/manifest.json          **模块清单**（唯一的「有哪些模块」的真相），框架用 fetch 读它
+modules/twitter/index.js       描述符（id/title/defaults）+ 组装 + 生命周期
+                 store.js      会话身份与 jsonl 编解码 + 头像/横幅/配图的读写
+                 stats.js      四个数字（浏览 / 点赞 / 转发 / 评论）的生成与 K 写法
+                 capture.js    <推文> / <推文时间> 的解析、剥离与落盘
+                 render.js     仿推特页面的整份 HTML（iframe 的 srcdoc，固定高度 + 只滚推文列表）
+                 ui.js         推特面板（资料区 / 推文管理 / 解析设置）+ iframe 接线
 modules/journal/index.js       描述符（id/title/defaults）+ 组装 + 生命周期
                   storage.js   日记存储层（会话身份 hash、jsonl 编解码）
                   floors.js    楼层（聊天记录）选择
@@ -122,7 +131,7 @@ modules/state/index.js         描述符 + 组装
 | 章节 | 内容 |
 | --- | --- |
 | 通用工具 | `ctx()` / `el()` / `debounce` / `stableHash` / `renderTemplateString` / `getChatArray` … |
-| 设置 | `DEFAULT_SETTINGS`（只剩框架键）/ `loadSettings` / `updateSetting` / 自定义默认值 / 废弃键清理 |
+| 设置 | `DEFAULT_SETTINGS`（只剩框架键）/ `loadSettings` / `updateSetting` / **`replaceSettings()`（就地替换，绝不重新绑定，见 §5 第 8 条）** / 自定义默认值 / 废弃键清理 |
 | 日记文件存储 | 补丁端点 `/api/role-expansion/journal/*` 的封装（`journalAvailability` / `pathText` / `reasonText` / 读 / 写 / 探针），模块共用所以留在框架 |
 | 共享运行时状态 | `ui` 单例：**框架与模块都要读**的运行时事实（`ui.journal` / `ui.generatingJournal` / `ui.currentGenerationType` …）；单模块自用的字段不要往这里塞 |
 | DOM 构建 | `el()` / `q()` / `section()` / `collapsible()` / `checkboxRow()` / `ID` |
@@ -158,8 +167,8 @@ function ctx() {
 | `eventSource` / `eventTypes` | 事件订阅（§2.3） |
 | `chat` / `chatMetadata` / `name1` / `name2` / `characterId` | 会话身份、状态存储 |
 | `getCurrentChatId()` | 日记文件名 hash 的来源 |
-| `getRequestHeaders()` | 日记端点 `/api/role-expansion/*` 的 CSRF 请求头 |
-| `characters[]` / `characterId` / `groupId` | 日记落点：头像文件名 → 角色目录；`groupId` 非空 = 群聊 → 日记不可用 |
+| `getRequestHeaders()` | 两个补丁端点（`/api/role-expansion/journal/*` 与 `/asset/*`）的 CSRF 请求头 |
+| `characters[]` / `characterId` / `groupId` | 落点：头像文件名 → 角色聊天目录；`groupId` 非空 = 群聊 → 日记与推特都不可用（两者共用 `journalAvailability()` 这套判断） |
 | `generateRaw` / `generateQuietPrompt` | 两条生成通道 |
 | `getCharacterCardFields()` | 隔离通道补角色卡 |
 | `setExtensionPrompt()` | 状态注入 |
@@ -192,11 +201,24 @@ function ctx() {
 > 当前只有日记模块消费它；端点的校验细节、失败原因表与「不可用时怎么办」见 `modules/journal/DEVELOPMENT.md`。
 > **改了这份补丁要重启酒馆主进程。**
 
+`patches/st-twitter-assets.patch`（同样只做新增，**必须打在 `st-journal-store` 之后** —— 它锚定那份补丁往 `server-startup.js` 里加的两行；`st-marker-prompt` 与它没有依赖）：
+
+| 文件 | 改什么 | 为什么扩展自己做不到 |
+| --- | --- | --- |
+| `src/endpoints/role-expansion-assets.js`（新增） | `POST /asset/{get,save,delete}`：读写 `<角色聊天目录>/_RoleExpansion/<sub>/<name>`，`sub` 与扩展名各有一张白名单，文本按 utf8、图片按 base64，带 `isPathUnderParent` 双保险、文本 16MB / 二进制 8MB 上限 | 前端没有一条接口能写进 `chats/`；`/api/files/*` 还有"单段 ASCII 名"的限制，装不下头像这类二进制 |
+| `src/server-startup.js` | 再挂一行 `app.use('/api/role-expansion', roleExpansionAssetsRouter)`（同一个 mount，路由前缀 `/asset`） | — |
+
+> 框架侧包装成 `readAssetText` / `readAssetBinary` / `writeAssetText` / `writeAssetBinary` / `deleteAssetFile`，
+> 并进 `kernel`；当前消费方是推特模块（自己的 jsonl + `avatar.png` + `banner.jpg` + 每条推文的配图 `tweet-<id>.<ext>`）。
+> 三个补丁的执行顺序是 marker → journal → twitter-assets。
+
 **不打补丁的降级行为**（不会崩，但功能残）：
 
 - 日记注入链断掉（`runtimeSources` 里没有我们的条目）
 - 面板上的卡片状态提示显示「补丁不完整」
 - `logMarkerSupport()` / `diagnoseJournalCard()` 会在控制台打出具体缺哪一处
+- 缺服务端补丁的两个模块会**明确报出来**（都不会静默）：日记面板红字点出 `st-journal-store.patch`、
+  推特面板红字点出 `st-twitter-assets.patch`（缺补丁时推特的仿推特页面整块隐藏，资料区照旧能打字但写不进去）
 
 自测里有一条断言**直接读 patch 文件**，检查关键片段还在（防止补丁被改坏却没发现）。
 
@@ -218,11 +240,13 @@ function ctx() {
 
 | 事件 | 干什么 |
 | --- | --- |
-| `CHAT_CHANGED` | 清空勾选、重算会话身份、重载日记、重做状态注入 |
-| `MESSAGE_RECEIVED` | 解析并剥离状态标签 |
+| `CHAT_CHANGED` | 清空勾选、重算会话身份、重做状态注入、后台重载日记（不看面板开没开）、`reloadTwitter()` |
+| `MESSAGE_RECEIVED` | 先解析并剥离状态标签（`onCharacterMessageReceived()`），再收录推文（`onTwitterMessage()`）—— 两个各自 try/catch，一个抛不影响另一个 |
 | `GENERATION_STARTED` | 记录生成类型（旧版酒馆可能没有，缺失时靠 `ui.generatingJournal` 兜底） |
 | `OAI_PRESET_CHANGED_AFTER` / `_BEFORE` | 换预设后刷新卡片状态文案、重新确保运行时源 |
-| `APP_READY` / `EXTENSION_SETTINGS_LOADED` | 初始化「扩展程序」设置区 |
+| `EXTENSION_SETTINGS_LOADED` | 初始化「扩展程序」设置区 |
+| `APP_READY` | 初始化设置区 + 状态注入 + 清历史注入 + 确保运行时源 + 卡片状态 + 后台重载日记 + `reloadTwitter()` |
+| `GENERATION_ENDED` / `_STOPPED` | 延迟 200ms 刷新一次卡片状态文案（此时预览数据才建立） |
 
 ---
 
@@ -232,11 +256,11 @@ function ctx() {
 
 | 通道 | 框架提供什么 | 谁在用 |
 | --- | --- | --- |
-| **提示词注入** | `setExtensionPrompt()` 的包装 ｜ 运行时提示词源（`registerRuntimePromptSource()`，由 marker 补丁提供） | 状态模块 ｜ 日记模块 |
-| **持久化** | `chatMetadata`（随聊天走）｜ 补丁端点 `/api/role-expansion/journal/*`（写进角色聊天目录） | 状态模块 ｜ 日记模块 |
+| **提示词注入** | `setExtensionPrompt()` 的包装 ｜ 运行时提示词源（`registerRuntimePromptSource()`，由 marker 补丁提供） | 状态模块 ｜ 日记模块（推特模块**不注入**任何提示词） |
+| **持久化** | `chatMetadata`（随聊天走）｜ 补丁端点 `/api/role-expansion/journal/*`（角色聊天目录下的文本）｜ 补丁端点 `/api/role-expansion/asset/*`（模块私有子目录，文本 + 图片） | 状态模块 ｜ 日记模块 ｜ 推特模块 |
 
 每个模块自己的完整数据流、状态机与内部约定，写在 `modules/<id>/DEVELOPMENT.md`：
-[`journal`](modules/journal/DEVELOPMENT.md) ｜ [`state`](modules/state/DEVELOPMENT.md)。
+[`twitter`](modules/twitter/DEVELOPMENT.md) ｜ [`journal`](modules/journal/DEVELOPMENT.md) ｜ [`state`](modules/state/DEVELOPMENT.md)。
 ## 4. 关键实现细节
 
 ### 4.1 运行时提示词源
@@ -290,6 +314,15 @@ registerRuntimePromptSource('roleExpansionJournal', getContent, {
    漏掉的症状是**静默的**：不报错，只是「这块折叠是硬切」。
    实测时长与主面板一致（收起 751→0 约 250ms = `--animation-duration-2x`，35 帧）；
    嵌套在其它 `.roleEx-section-body` 里的区块（日记主提示词 / 状态注入提示词）同样生效。
+5. **嵌入内容（`iframe` / canvas）优先「固定高度 + 内部滚动」，不要「按内容量高度」**：
+   `setOpen(false)` 写的是 `display: none`，里面的 `iframe` 就没有布局盒（实测
+   `contentDocument.documentElement` 的 `clientHeight` 与 `scrollHeight` **全是 0**），
+   而 `load` 事件照样会发 —— 在那一刻量高度只能得到 0 或按默认 300×150 视口算出的假值；
+   `documentElement.scrollHeight` 还「只增不减」（内容变少也不回落）。
+   真要走自适应，必须量 `body` 的 `getBoundingClientRect().height` **并且**挂两个
+   `ResizeObserver`（盯元素、盯内容），还要留「量不准也够得到内容」的兜底 —— 能做，但脆。
+   推特模块在 `0.7.2`/`0.8.0` 上两次踩这里，最后改成固定高度 + 只滚列表（§5 第 9 条、
+   推特模块 DEVELOPMENT §7）。
 
 ### 4.3 面板层级：永远在抽屉栈最底层
 
@@ -387,13 +420,15 @@ DEFAULT_SETTINGS                      代码里的内置默认（唯一权威定
 | 4 | 抽屉按钮点了没反应 | 酒馆直接绑定 `.drawer-toggle`，不认后插入的元素 | 自己绑 click + 自己管互斥 |
 | 5 | Patch 打了一半，卡片没有开关/铅笔 | 上游文件被覆盖或只应用了部分 hunk | `logMarkerSupport()` 诊断 + 自测读 patch 文件校验关键片段 |
 | 6 | 面板展开 / 收起是硬切，很生硬 | `#movingDivs>.drawer-content{height:unset}` 冲掉了酒馆的 `height:0` 起点，本文件又写了 `height:auto`，没有可插值的量 | 自己重写 `height:0 → calc-size(auto,size)` + `allow-discrete` + `@starting-style`（§4.4） |
+| 8 | 「恢复默认设置」之后，模块里的勾选框 / 提示词 / 开关**全部不生效**，而且不报错 | `loadSettings()` 与 `resetToDefaults()` 原先写的是 `settings = 新对象`（重新绑定）。模块在 `create(kernel)` 时把 `get settings()` 解构了一次，手里是**旧对象**，于是永远读不到新值 | 改成 `replaceSettings()`：清空旧键 + `Object.assign` 新内容，**对象身份永远不变**（§1.2 设置行） |
 | 7 | 一行里的控件**看不见也点不到**（历史上是「恢复默认」按钮，现在是「注入深度 / 注入角色」），被误判成「建了没 append」 | 不换行的 flex 行溢出：中文标签被压成竖排（min-content = 一个字宽）+ `.drawer-content select{width:100%}` 撑满整行，尾部被 `#roleExpansionPanel{overflow:hidden}` 裁掉。节点一直都在 DOM 里 | 标签加 `.roleEx-inline-label`、下拉框用 `#roleExpansionPanel select.roleEx-num` 压回可用宽度（§4.2 第 3 条） |
+| 9 | 默认收起的折叠块里，`iframe` 展开后高度还停在 240px 占位值：第一张配图很高时下面的内容再也看不到 | `section()` 收起是 `display: none` → `load` 那一刻 iframe 没有布局盒，量到 0 就被 `if (height > 0)` 跳过；再叠加 `scrolling="no"` + srcdoc 里的 `overflow: hidden`，内容彻底够不到 | 嵌入块一律**固定高度 + 内容区内部滚动**，父页面不量高度（§4.2 第 5 条）；真要做自适应才用 `ResizeObserver` + 兜底滚动条 |
 
 > 第 3、5 条值得单独强调：这个项目的失败模式**常常是静默的** —— 不报错、不抛异常，
 > 只是「某块 UI 不见了」或「某段内容没进去」。所以自测里大量断言是针对 **DOM 结构与补丁文本**的。
 
-> 模块侧的坑（日记的自反馈注入、存储位置与改名边界、状态标签误删内容与准入顺序 …）
-> 见 `modules/journal/DEVELOPMENT.md` 与 `modules/state/DEVELOPMENT.md` 的「踩过的坑」。
+> 模块侧的坑（推特的高度/滚动与就地 patch、日记的自反馈注入与存储位置、状态标签误删内容与准入顺序 …）
+> 见 `modules/twitter/DEVELOPMENT.md`、`modules/journal/DEVELOPMENT.md` 与 `modules/state/DEVELOPMENT.md` 的「踩过的坑」。
 ## 6. 开发流程
 
 ### 6.1 目录与同步
@@ -404,7 +439,7 @@ DEFAULT_SETTINGS                      代码里的内置默认（唯一权威定
 | 酒馆安装目录 | `E:\SillyTavern\SillyTavern\data\default-user\extensions\ST-RoleExpansion` |
 
 改完仓库后，把运行必需的东西同步到安装目录：`index.js` / `style.css` / `index.html` / `manifest.json`，
-**以及整个 `modules/` 目录**（模块是运行时的一部分；只同步 index.js 会变成「两个模块都没装」）。
+**以及整个 `modules/` 目录**（模块是运行时的一部分；只同步 index.js 会变成「模块全都没装」）。
 然后 `Ctrl+F5`，**不需要重启酒馆**。
 
 `CHANGELOG.md` / `package.json` / `.github/` / `.editorconfig` 等只存在于开发仓库，不必同步；
@@ -418,12 +453,13 @@ DEFAULT_SETTINGS                      代码里的内置默认（唯一权威定
 ```bash
 npm test                                  # = node tools/smoke-test.mjs（不需要酒馆）
 node tools/check-filename.mjs "some name.jsonl"   # 排查文件名校验
-npm run test:patch [酒馆根目录]            # 补丁端点 e2e：从 patch 抽出端点真起一个 express
+node tools/patch-endpoint-test.mjs [酒馆根目录]   # 日记端点 e2e（26 项）
+node tools/patch-asset-test.mjs   [酒馆根目录]   # 资源端点 e2e（36 项）
 ```
 
-`patch-endpoint-test.mjs` 需要酒馆根目录里的 `node_modules`（express / sanitize-filename /
-write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也没关系；它验证的是
-**补丁里的那份端点源码**（直接从 `patches/st-journal-store.patch` 抽正文），不是另抄一份。
+两个 e2e 脚本都需要酒馆根目录里的 `node_modules`（express / sanitize-filename /
+write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也没关系；它们验证的是
+**补丁里的那份端点源码**（直接从 `patches/*.patch` 抽正文），不是另抄一份。
 
 - 纯 Node，**不需要浏览器、不需要跑酒馆**
 - 原理：stub 一个最小 DOM + 酒馆桩 → `await import('../index.js')` →
@@ -451,6 +487,8 @@ write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也�
 | `saveAsDefaults()` / `resetToDefaults()` / `clearCustomDefaults()` | 默认值快照（§4.5） |
 | `logMarkerSupport()` / `patchPromptManagerFirstRender()` | 运行时提示词源（补丁）的诊断与首屏补渲染 |
 | `journalAvailability()` / `probeJournalStorage()` / `journalPathText()` / `journalReasonText()` | 框架侧的日记存储层（模块消费）：能不能写、写到哪、为什么不能 |
+| `assetPathText(sub, name)` / `probeAssetStorage(sub)` | 框架侧的模块私有资源层（推特消费）：路径文案 + 只读探针 |
+| `reloadTwitter()` / `renderTwitter()` / `describeTwitter()` | 推特模块：重读 / 重画 / 状态快照（模块不在时是空壳） |
 
 各模块自己的入口（日记的 `diagnoseJournalCard()`、状态的 `getStateList()` …）见模块 DEVELOPMENT 的「调试入口」。
 浏览器控制台另有 `SillyTavern.getContext()` 可以直接看酒馆侧的上下文。
@@ -461,16 +499,17 @@ write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也�
 | 多扩展冲突 | 运行时提示词源的 `identifier` 由各模块自己定（日记是 `roleExpansionJournal`）；与另一个用同一 identifier 的扩展会撞 |
 | i18n | 界面文案全是硬编码简体中文，没走酒馆的 `t()` |
 | 框架不做跨模块状态容器 | 模块之间**只**走 `kernel.service('<id>')`，对方不在时取安全缺省；框架不提供事件总线、也不替模块存数据 |
-| 模块自身的限制与预留点 | 见各模块文档的「已知限制」（日记：群聊不支持、改名边界、隔离通道只剥成块写的推理…；状态：标签准入、新聊天状态为空…） |
+| 模块自身的限制与预留点 | 见各模块文档的「已知限制」（推特：固定高度一屏、群聊不支持、只收录纯文本推文、数字没有范围校验…；日记：群聊不支持、改名边界、隔离通道只剥成块写的推理…；状态：标签准入、新聊天状态为空…） |
 ## 9. 快速自检清单
 
 改动之后，按这个顺序过一遍：
 
 - [ ] `node --check index.js` —— 语法
-- [ ] `npm test` —— 断言数是否还是 270（或你确实改过断言数）
+- [ ] `npm test` —— 断言数是否还是 394（或你确实改过断言数）；改了补丁端点再跑一次 `npm run test:patch`
 - [ ] 动了模块系统：把 `modules/<id>/` 挪走再跑一次 `npm test`（框架部分应当照常，模块相关断言会红），
       并在酒馆里确认「面板少一块 + 别的功能照常 + 控制台只多一行 info」
 - [ ] 涉及 UI 的改动：`Ctrl+F5` 后在酒馆里实际点一遍（自测的 DOM 是 stub，覆盖不到视觉）
-- [ ] 涉及补丁的改动：确认 `patches/st-marker-prompt.patch` 与 `patches/st-journal-store.patch` 都能 `git apply --check`
+- [ ] 涉及补丁的改动：确认三份补丁（`st-marker-prompt` / `st-journal-store` / `st-twitter-assets`）都能 `git apply --check`，
+      且后两份的执行顺序没反
 - [ ] 版本号 4 处是否一致
 - [ ] `git status` —— 有没有忘了提交的改动

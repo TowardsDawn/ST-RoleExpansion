@@ -240,7 +240,7 @@ body = `{ avatar_url, file_name }`（save 再加 `text`），请求头走 `ctx()
 | reason | 触发 | 文案（`journalReasonText()`，UI 与 Toast 共用） |
 | --- | --- | --- |
 | `group` | `ctx().groupId` 非空（`journalAvailability()`，**本地判**，不发请求） | 群聊不支持日记：日记按角色目录存放，群聊没有角色目录。 |
-| `no-character` | 拿不到 `ctx().characters[characterId].avatar`（本地判） | 还没有选择角色（角色目录未知）。 |
+| `no-character` | 拿不到 `ctx().characters[characterId].avatar`（本地判） | 还没有选择角色（角色目录未知）。**面板里不打红字**：存储说明换成中性文案「选一个角色后才有落点。」、空列表照旧说「本会话还没有日记。」、`reloadJournal()` 也不弹 Toast；只有真的去读写时才用这句话报错。 |
 | `patch-missing` | 端点回 **404**（酒馆对未知 `/api` 路由回 HTML） | 缺服务端补丁：对酒馆执行 `git apply patches/st-journal-store.patch` 并重启… |
 | `invalid-path` | 服务端回 **400** | 服务端拒绝了日记路径（文件名或角色头像名不合法）。 |
 | `too-large` | 服务端回 **413** | 日记文件超过服务端上限（16MB）。 |
@@ -465,7 +465,7 @@ ctx().setExtensionPrompt(EXT_PROMPT_KEY.JOURNAL_MAIN /* 'RoleExpansion_JournalMa
 ## 6. UI 结构
 
 ```
-section('日记', { open: true })        #roleEx-journal-section（icon: fa-solid fa-book）
+section('日记', { open: false })       #roleEx-journal-section（icon: fa-solid fa-book）
 ├─ block #roleEx-inject-block          「提示词注入」+ #roleEx-inject-status（一行状态）
 ├─ block #roleEx-new-journal-block     「新日记」
 │   ├─ #roleEx-journal-title           标题输入（placeholder「留空则由模型生成标题」）
@@ -608,7 +608,7 @@ section('日记', { open: true })        #roleEx-journal-section（icon: fa-soli
 `npm test`（= `node tools/smoke-test.mjs`）用 stub DOM + 酒馆桩直接加载真 `index.js`，纯 Node、不需要浏览器。
 日记相关断言散在整份脚本里，搜 `journal` / `roleExpansionJournal` / `隔离` 就能定位。覆盖到的：
 
-- **面板结构**：日记外层区块默认展开 / 箭头 up、收起后 down + `display:none`、再点恢复；
+- **面板结构**：日记外层区块**默认收起**（三个模块的一级区块都默认折叠）/ 点开后箭头 up、再点收起 down + `display:none`；
   「参考聊天楼层」「日记列表」「角色设定（隔离通道）」都是 `.inline-drawer`（走酒馆原生委托）；
   「角色设定」默认收起；「插入日记系统」是折叠体第一行且紧挨计数行；「提示词注入」排在「新日记」之前；
   「全选」「清空」两个独立按钮（分别勾选全部 / 取消全部）；主提示词编辑框**确实挂在日记面板 section 里**

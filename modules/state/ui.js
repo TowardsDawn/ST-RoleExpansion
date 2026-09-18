@@ -20,7 +20,7 @@ export function createStateUi(kernel, rt) {
 // ============================================================================
 
 function buildStatePanel() {
-    const s = section('角色状态栏', { open: true });
+    const s = section('角色状态栏', { open: false });
     s.root.setAttribute('id', 'roleEx-state-section');
     iconFor(s.root, 'fa-solid fa-heart-pulse');
 

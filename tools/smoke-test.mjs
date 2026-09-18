@@ -58,6 +58,15 @@ function makeEl(tag = 'div') {
             }
         },
         insertAdjacentElement(_pos, node) { this.parentElement?.appendChild(node); return node; },
+        insertBefore(node, ref) {
+            const i = ref ? this.children.indexOf(ref) : -1;
+            if (i === -1) {
+                return this.appendChild(node);
+            }
+            this.children.splice(i, 0, node);
+            node.parentElement = this;
+            return node;
+        },
         insertAdjacentHTML() { },
         querySelector(sel) {
             if (sel.startsWith('#')) {
@@ -72,6 +81,10 @@ function makeEl(tag = 'div') {
             }
             if (sel === '.drawer-icon') {
                 return this.children.find(c => String(c.className).includes('drawer-icon')) ?? null;
+            }
+            // 区块标题行里的箭头：模块要把状态 / 工具插到它前面
+            if (sel === '.roleEx-chevron') {
+                return this.children.find(c => String(c.className).includes('roleEx-chevron')) ?? null;
             }
             return null;
         },
@@ -204,6 +217,9 @@ const fakeFs = new Map();
 let journalEndpointAvailable = true;
 /** 端点调用记录 */
 const journalCalls = [];
+/** 模块私有资源（推特模块用它存 jsonl + 头像 + 横幅）：key = '<sub>|<name>' */
+const assetFs = new Map();
+const assetCalls = [];
 globalThis.fetch = async (url, options = {}) => {
     const u = String(url);
     if (u.startsWith('/api/role-expansion/journal/')) {
@@ -218,6 +234,27 @@ globalThis.fetch = async (url, options = {}) => {
         }
         fakeFs.set(key, String(body.text));
         return { ok: true, status: 200, text: async () => '', json: async () => ({ ok: true }) };
+    }
+    if (u.startsWith('/api/role-expansion/asset/')) {
+        const body = JSON.parse(options.body || '{}');
+        assetCalls.push({ route: u, body });
+        if (!journalEndpointAvailable) {
+            return { ok: false, status: 404, text: async () => 'Cannot POST ' + u, json: async () => ({}) };
+        }
+        const key = String(body.sub) + '|' + String(body.name);
+        const isText = String(body.name || '').endsWith('.jsonl');
+        if (u.endsWith('/get')) {
+            const exists = assetFs.has(key);
+            const stored = assetFs.get(key) || '';
+            return { ok: true, status: 200, text: async () => '', json: async () => (isText
+                ? { exists, text: stored }
+                : { exists, base64: stored, mime: String(body.name).endsWith('.jpg') ? 'image/jpeg' : 'image/png' }) };
+        }
+        if (u.endsWith('/delete')) {
+            return { ok: true, status: 200, text: async () => '', json: async () => ({ ok: true, removed: assetFs.delete(key) }) };
+        }
+        assetFs.set(key, String(body.text !== undefined ? body.text : body.base64));
+        return { ok: true, status: 200, text: async () => '', json: async () => ({ ok: true, bytes: 1 }) };
     }
     return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
 };
@@ -356,6 +393,19 @@ function check(label, actual, expected) {
         console.log(`ok    ${label}`);
     }
 }
+
+/** 深度优先收集满足 pred 的节点（stub DOM 没有 querySelectorAll，用它代替） */
+const allNodes = (root, pred, out) => {
+    const acc = out || [];
+    const stack = [root];
+    while (stack.length) {
+        const node = stack.shift();
+        if (!node) continue;
+        if (pred(node)) acc.push(node);
+        for (const child of (node.children || [])) stack.push(child);
+    }
+    return acc;
+};
 
 // 模块清单是 fetch 来的（浏览器里走酒馆的扩展路由）。自测在 Node 里跑，
 // 这里把 file:// 的 fetch 接到 fs 上 —— 被测代码本身不需要任何 Node 专用分支。
@@ -778,14 +828,15 @@ check('角色设定折叠体内有三个开关行',
 const journalSectionEl = registry.get('roleEx-journal-section');
 const journalSectionHead = journalSectionEl?.children?.[0];
 const journalChevron = journalSectionHead?.children?.find?.(c => String(c.className).includes('roleEx-chevron'));
-check('「日记」外层区块默认展开', journalSectionEl?.children?.[1]?.style?.display, 'block');
-check('外层区块展开时箭头是 up（不再用 right / 展开朝下那套）',
-    String(journalChevron?.className).includes('fa-circle-chevron-up'), true);
+check('「日记」外层区块默认收起（所有模块的一级区块都默认折叠）', journalSectionEl?.children?.[1]?.style?.display, 'none');
+check('默认收起时箭头是 down（不再用 right / 展开朝下那套）',
+    String(journalChevron?.className).includes('fa-circle-chevron-down'), true);
 journalSectionHead?.click();
-check('外层区块收起后箭头变 down', String(journalChevron?.className).includes('fa-circle-chevron-down'), true);
-check('外层区块收起后正文 display:none', journalSectionEl?.children?.[1]?.style?.display, 'none');
+check('点开后箭头变 up', String(journalChevron?.className).includes('fa-circle-chevron-up'), true);
+check('点开后正文 display:block', journalSectionEl?.children?.[1]?.style?.display, 'block');
 journalSectionHead?.click();
-check('再次点击恢复展开（还原现场）', journalSectionEl?.children?.[1]?.style?.display, 'block');
+check('再点一次收起（还原现场）', journalSectionEl?.children?.[1]?.style?.display, 'none');
+// 后面的断言都只读 DOM 结构，不需要它可见 —— 让它保持收起（顺便验证「默认折叠」这条约定）
 
 // ---- 日记面板新增「提示词注入」区块，且必须排在「新日记」之上 ----
 const journalBody = journalSectionEl?.children?.[1];
@@ -889,7 +940,11 @@ const noteText = String(storageNote?.innerHTML ?? '');
 check('存储说明指向角色聊天目录下的私有子目录',
     noteText.includes('chats/&lt;角色&gt;/_RoleExpansion/journals/RoleExpansion_journal') && noteText.includes('一篇日记一行'), true);
 const scrollEl = registry.get('roleEx-scroll');
-check('主面板里只剩「日记」「角色状态栏」两块（不再有关于面板）', scrollEl?.children?.length, 2);
+check('主面板里是「推特」「日记」「角色状态栏」三块', scrollEl?.children?.length, 3);
+check('推特区块排在最上面（模块清单顺序）', String(scrollEl?.children?.[0]?.id || ''), 'roleEx-twitter-section');
+check('推特区块横跨整行（roleEx-span-all）', scrollEl?.children?.[0]?.classList?.contains('roleEx-span-all'), true);
+check('推特区块里有 iframe / 状态行 / 推文管理列表',
+    !!registry.get('roleEx-twitter-frame') && !!registry.get('roleEx-twitter-status') && !!registry.get('roleEx-twitter-list'), true);
 
 // ---- 「状态注入提示词」是「角色状态栏」面板内部的子区块 ----
 const tplSectionEl = registry.get('roleEx-state-tpl-section');
@@ -1182,8 +1237,8 @@ api.settings.stateOnlyKnownNames = true;
 // 「可拆」的可验证部分是：模块清单、启用开关、以及模块不在时框架给的空壳（不抛）。
 // 真正「删目录」的验证在 DEVELOPMENT.md §7 的手工清单里（自测桩里没法删文件）。
 const moduleList = api.modules();
-check('模块清单：日记 / 角色状态栏都已加载并启用',
-    moduleList.filter(m => m.installed && m.enabled).map(m => m.id).sort().join(','), 'journal,state');
+check('模块清单：推特 / 日记 / 角色状态栏都已加载并启用',
+    moduleList.filter(m => m.installed && m.enabled).map(m => m.id).sort().join(','), 'journal,state,twitter');
 check('模块清单带 installed / enabled / title（拆掉模块时 installed 会变 false）',
     moduleList.every(m => typeof m.installed === 'boolean' && typeof m.enabled === 'boolean' && 'title' in m), true);
 check('settings.modules 是模块启用开关表（默认 {} = 全部启用）',
@@ -1265,6 +1320,8 @@ journalEndpointAvailable = true;
 const savedCtx = globalThis.SillyTavern.getContext;
 globalThis.SillyTavern.getContext = () => ({ ...savedCtx(), groupId: 'group-1' });
 check('群聊：可用性判为 group', api.journalAvailability(), { ok: false, reason: 'group' });
+check('群聊：文案说明为什么不可用（这条仍然打红字）',
+    api.journalReasonText('group').includes('群聊不支持日记'), true);
 const callsBeforeGroup = journalCalls.length;
 await api.reloadJournal();
 check('群聊：日记不可用原因是 group', api.ui.journalError, 'group');
@@ -1276,11 +1333,459 @@ await api.reloadJournal();
 check('切回单聊：错误状态清空', api.ui.journalError, null);
 check('切回单聊：日记读得回来', api.ui.journal.length, 1);
 
+// 「还没选角色」不是出错：存储说明换成中性文案、列表空态照旧、也不打红字
+const savedCtxNoChar = globalThis.SillyTavern.getContext;
+globalThis.SillyTavern.getContext = () => ({ ...savedCtxNoChar(), characters: {}, characterId: undefined });
+await api.reloadJournal();
+check('未选角色：原因是 no-character', api.ui.journalError, 'no-character');
+const noCharHint = registry.get('roleEx-storage-hint');
+check('未选角色：存储说明不打红字',
+    noCharHint?.classList?.contains('roleEx-warn'), false);
+check('未选角色：存储说明是一句中性的话（不再打印那句「还没有选择角色…」）',
+    String(noCharHint?.textContent || '').includes('选一个角色后才有落点')
+        && String(noCharHint?.textContent || '').includes('还没有选择角色') === false, true);
+check('未选角色：列表空态说的是「本会话还没有日记。」',
+    allNodes(registry.get('roleEx-journal-list'), n => String(n?.textContent || '').includes('本会话还没有日记')).length > 0, true);
+check('未选角色：列表空态不打红字',
+    allNodes(registry.get('roleEx-journal-list'), n => n?.classList?.contains('roleEx-warn')).length, 0);
+globalThis.SillyTavern.getContext = savedCtxNoChar;
+await api.reloadJournal();
+check('拿回角色后：存储说明恢复成落点文案',
+    String(registry.get('roleEx-storage-hint')?.textContent || '').includes('_RoleExpansion/journals/'), true);
+
 // ---- 源码层面：日记不再走 /api/files，落点是补丁端点 ----
 check('源码里不再有 files 写入接口调用',
     /fetch\([^)]*\/api\/files\//.test(allSrc), false);
 check('源码里出现补丁端点前缀',
     allSrc.includes('/api/role-expansion/journal'), true);
 check('源码注释里点明需要补丁', allSrc.includes('st-journal-store.patch'), true);
+// ---- 推特模块：捕获 / 剥离 / 数字固化 / 置顶 / 落盘 / 不可用 ----
+const twJsonlKey = () => [...assetFs.keys()].find(k => k.startsWith('twitter|RoleExpansion_twitter_') && k.endsWith('.jsonl'));
+const twRaw = () => { const key = twJsonlKey(); return key ? assetFs.get(key) : ''; };
+const twTweets = () => twRaw().split('\n').map(l => l.trim()).filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch (e) { return null; } })
+    .filter(o => o && o.__roleExpansion === 'twitter');
+const twFrameHtml = () => String(registry.get('roleEx-twitter-frame')?.srcdoc || '');
+function nodeByText(root, text) {
+    const stack = [root];
+    while (stack.length) {
+        const node = stack.shift();
+        if (!node) continue;
+        if (String(node.textContent) === text && String(node.className || '').includes('menu_button')) return node;
+        for (const child of (node.children || [])) stack.push(child);
+    }
+    return null;
+}
+
+chat.push({ is_user: false, name: '角色', mes: '（她掏出手机）\n<推文时间>2小时前</推文时间><推文>今天去看海了🌊\n风很大。</推文>' });
+emit('message_received', chat.length - 1, 'normal');
+await new Promise(r => setTimeout(r, 40));
+check('推特：捕获到 1 条推文', twTweets().length, 1);
+check('推特：时间是就近配对的那条', twTweets()[0]?.time, '2小时前');
+check('推特：正文换行原样保留', twTweets()[0]?.content, '今天去看海了🌊\n风很大。');
+check('推特：标签已从正文剥离', chat[chat.length - 1].mes.includes('<推文'), false);
+check('推特：剥离后不留多余空行', /\n{3,}/.test(chat[chat.length - 1].mes), false);
+check('推特：落盘在 twitter 子目录、文件名带双 hash',
+    assetCalls.some(c => c.route === '/api/role-expansion/asset/save' && String(c.body.name).startsWith('RoleExpansion_twitter_c_') && c.body.sub === 'twitter'), true);
+check('推特：jsonl 三行结构（会话头 + 资料 + 推文）',
+    twRaw().trim().split('\n').map(l => JSON.parse(l).__roleExpansion).join(','),
+    'twitter-session,twitter-profile,twitter');
+
+const twStats = twTweets()[0].stats;
+check('推特：浏览在 500~50000 之间', twStats.view >= 500 && twStats.view <= 50000, true);
+check('推特：点赞与浏览关联（≤8%）', twStats.like >= 1 && twStats.like <= Math.ceil(twStats.view * 0.08), true);
+check('推特：转发与点赞关联（≤30%）', twStats.retweet <= Math.ceil(twStats.like * 0.3), true);
+check('推特：评论与点赞关联（≤20%）', twStats.reply <= Math.ceil(twStats.like * 0.2), true);
+
+await api.reloadTwitter();
+check('推特：重新读盘后数字不变（生成即固化）', JSON.stringify(twTweets()[0].stats), JSON.stringify(twStats));
+
+// 手改 JSONL：既验证「数字只能手改」，也验证 K 记法
+const twKey0 = twJsonlKey();
+const twLines = twRaw().trim().split('\n').map(l => JSON.parse(l));
+const twTarget = twLines.find(o => o.__roleExpansion === 'twitter');
+twTarget.stats = { view: 32400, like: 1234, retweet: 210, reply: 60 };
+assetFs.set(twKey0, twLines.map(o => JSON.stringify(o)).join('\n') + '\n');
+await api.reloadTwitter();
+check('推特：手改 JSONL 的数字能被读回', JSON.stringify(twTweets()[0].stats),
+    JSON.stringify({ view: 32400, like: 1234, retweet: 210, reply: 60 }));
+check('推特：srcdoc 用 K 记法显示（1.2K / 32K）',
+    twFrameHtml().includes('1.2K') && twFrameHtml().includes('32K'), true);
+
+// 第二条推文（无时间）→ 新推文 seq 更大、排更上面
+chat.push({ is_user: false, name: '角色', mes: '<推文>第二条推文。</推文>' });
+emit('message_received', chat.length - 1, 'normal');
+await new Promise(r => setTimeout(r, 40));
+check('推特：第二条也收录了', twTweets().length, 2);
+check('推特：新推文 seq 更大（排序依据）', twTweets()[1].seq > twTweets()[0].seq, true);
+check('推特：没给时间就不显示时间那一行', twTweets()[1].time, '');
+
+// 置顶：点管理列表里的「置顶」，只允许一条、且排在最上
+const twList = registry.get('roleEx-twitter-list');
+const twPinTargetId = twTweets()[1].id;
+const twPinRow = (twList?.children || []).find(node => node?.dataset?.twitterId === twPinTargetId);
+const pinButton = twPinRow ? nodeByText(twPinRow, '置顶') : null;
+check('推特：管理列表里有「置顶」按钮', !!pinButton, true);
+pinButton?.click();
+await new Promise(r => setTimeout(r, 40));
+check('推特：置顶生效且只有一条', twTweets().filter(t => t.pinned).length, 1);
+check('推特：置顶的是刚点的那条', twTweets().find(t => t.pinned)?.id, twTweets()[1].id);
+const twHtml = twFrameHtml();
+check('推特：srcdoc 里置顶推文排在另一条之前',
+    twHtml.indexOf('📌 置顶') !== -1 && twHtml.indexOf('📌 置顶') < twHtml.indexOf('今天去看海了'), true);
+check('推特：srcdoc 里不含 <script>（高度与标签切换由父页面接管）', /<script/i.test(twHtml), false);
+check('推特：srcdoc 里有四个数字（评论/转发/点赞/浏览）',
+    twHtml.includes('💬') && twHtml.includes('🔄') && twHtml.includes('❤️') && twHtml.includes('📊'), true);
+
+// ---- 一级区块默认折叠 / 资料区数字框 / 四个数字可在 UI 里改 ----
+check('三个模块的一级区块都默认折叠',
+    ['roleEx-twitter-section', 'roleEx-journal-section', 'roleEx-state-section']
+        .every(id => registry.get(id)?.children?.[1]?.style?.display === 'none'), true);
+check('推特区块的箭头默认是 down（收起态）',
+    String(allNodes(registry.get('roleEx-twitter-section'), n => String(n.className).includes('roleEx-chevron'))[0]?.className || '').includes('fa-circle-chevron-down'), true);
+
+// ---- 状态行 + 工具按钮塞进「推文管理」折叠块：那块默认收起，平时不占高度（≈70px 全给 iframe） ----
+const twSectionEl = registry.get('roleEx-twitter-section');
+const twHeaderEl = twSectionEl?.children?.[0];
+const twBodyEl = twSectionEl?.children?.[1];
+const twStatusEl = registry.get('roleEx-twitter-status');
+const twManageBody = twStatusEl?.parentElement;
+const twManageFoldEl = twManageBody?.parentElement;
+check('推特：区块标题行只剩 [图标, 标题, 箭头]（没往折叠开关里塞控件）',
+    (twHeaderEl?.children || []).length === 3 && !(twHeaderEl?.children || []).includes(twStatusEl), true);
+check('推特：状态行在「推文管理」折叠块里（而且是排第一位的行）',
+    String(twManageFoldEl?.children?.[0]?.children?.[0]?.textContent || ''), '推文管理');
+check('推特：这个折叠块默认收起（display:none → 这两行平时不占高度）',
+    twManageBody?.style?.display, 'none');
+check('推特：「新增推文 / 刷新」也在这个折叠块里（顺序：状态 → 按钮行 → 说明 → 列表）',
+    (twManageBody?.children || []).indexOf(twStatusEl) === 0
+        && ((twManageBody?.children || [])[1]?.children || []).includes(registry.get('roleEx-twitter-add'))
+        && ((twManageBody?.children || [])[1]?.children || []).includes(registry.get('roleEx-twitter-refresh'))
+        && ((twManageBody?.children || [])[3]) === registry.get('roleEx-twitter-list'), true);
+check('推特：正文直接子节点只剩 iframe + 三个折叠块（省下的两行给了 iframe）',
+    (twBodyEl?.children || []).length === 4 && !(twBodyEl?.children || []).includes(twStatusEl), true);
+check('推特：三个折叠块都带 roleEx-twitter-fold（标题行削薄那档样式）',
+    allNodes(twSectionEl, n => n?.classList?.contains('roleEx-twitter-fold')).length, 3);
+
+const twFollowersInput = allNodes(registry.get('roleEx-twitter-section'), n => n?.dataset?.twitterField === 'followers')[0];
+const twFollowingInput = allNodes(registry.get('roleEx-twitter-section'), n => n?.dataset?.twitterField === 'following')[0];
+check('资料区「粉丝 / 正在关注」是数字输入框',
+    twFollowersInput?.type === 'number' && twFollowingInput?.type === 'number', true);
+
+// 手改资料行的关注数 → reload → srcdoc 里按千分位显示
+const twKeyProfile = twJsonlKey();
+const twProfileLines = twRaw().trim().split('\n').map(l => JSON.parse(l));
+const twProfileRow = twProfileLines.find(o => o.__roleExpansion === 'twitter-profile');
+twProfileRow.following = '128';
+twProfileRow.followers = '3240';
+assetFs.set(twKeyProfile, twProfileLines.map(o => JSON.stringify(o)).join('\n') + '\n');
+await api.reloadTwitter();
+check('关注数按千分位显示（3240 → 3,240）', twFrameHtml().includes('3,240'), true);
+
+// 点「编辑」→ 弹窗里四个数字可改 → 保存后落盘
+const twEditRow = (registry.get('roleEx-twitter-list')?.children || []).find(node => node?.dataset?.twitterId === twPinTargetId);
+const editButton = nodeByText(twEditRow, '编辑');
+check('管理列表里有「编辑」按钮', !!editButton, true);
+editButton?.click();
+const modal = (document.body.children || []).find(node => String(node.className).includes('roleEx-modal'));
+check('点「编辑」弹出编辑弹窗', !!modal, true);
+const statInput = (key) => allNodes(modal, n => n?.dataset?.twitterStat === key)[0];
+const modalTextarea = allNodes(modal, n => String(n.tagName) === 'TEXTAREA')[0];
+check('弹窗里有四个数字输入框（评论 / 转发 / 点赞 / 浏览）',
+    ['reply', 'retweet', 'like', 'view'].filter(key => !!statInput(key)).length, 4);
+check('弹窗里数字已按当前值预填（不是空的）',
+    ['reply', 'retweet', 'like', 'view'].every(key => String(statInput(key)?.value || '').trim() !== ''), true);
+if (modalTextarea) {
+    statInput('reply').value = '4242';
+    statInput('like').value = '999';
+    modalTextarea.value = '改过正文';
+    nodeByText(modal, '保存')?.click();
+    await new Promise(r => setTimeout(r, 80));
+}
+const twEdited = twTweets().find(t => t.id === twPinTargetId) || {};
+check('UI 里改的数字写进了 JSONL', JSON.stringify([twEdited.stats?.reply, twEdited.stats?.like]), JSON.stringify([4242, 999]));
+check('UI 里改的正文也落盘了', twEdited.content, '改过正文');
+check('没动的那两个数字保持原值', typeof twEdited.stats?.retweet === 'number' && typeof twEdited.stats?.view === 'number', true);
+check('弹窗保存后从 DOM 移除', (document.body.children || []).some(n => String(n.className).includes('roleEx-modal')), false);
+const twCss = twFrameHtml().split('</style>')[0];
+check('点赞 / 转发默认是灰的：粉色只由 .is-active 触发',
+    twCss.includes('.tweet-action-like.is-active, .tweet-action-retweet.is-active { color: #f91880; }')
+        && !/\.tweet-action-like \{ color:/.test(twCss), true);
+
+
+// 模型输出里的 HTML 必须被转义，不能真的变成标签
+chat.push({ is_user: false, name: '角色', mes: '<推文>试试 <b>加粗</b> 会不会生效。</推文>' });
+emit('message_received', chat.length - 1, 'normal');
+await new Promise(r => setTimeout(r, 40));
+check('推特：正文里的 HTML 被转义', twFrameHtml().includes('&lt;b&gt;加粗&lt;/b&gt;'), true);
+
+// 关掉剥离：标签留在正文里，但照常收录
+api.settings.twitterStripTags = false;
+chat.push({ is_user: false, name: '角色', mes: '<推文>不剥离测试。</推文>' });
+emit('message_received', chat.length - 1, 'normal');
+await new Promise(r => setTimeout(r, 40));
+check('推特：关掉剥离后正文里仍留着标签', chat[chat.length - 1].mes.includes('<推文>'), true);
+check('推特：关掉剥离也照常收录', twTweets().some(t => t.content === '不剥离测试。'), true);
+api.settings.twitterStripTags = true;
+
+// 孤立的时间标签：不动正文、不收录
+chat.push({ is_user: false, name: '角色', mes: '<推文时间>3天前</推文时间>（只有时间标签，没有推文）' });
+const twBeforeOrphan = twTweets().length;
+emit('message_received', chat.length - 1, 'normal');
+await new Promise(r => setTimeout(r, 40));
+check('推特：孤立时间标签 → 不收录也不动正文',
+    twTweets().length === twBeforeOrphan && chat[chat.length - 1].mes.includes('<推文时间>'), true);
+
+// 总开关
+api.settings.twitterCapture = false;
+chat.push({ is_user: false, name: '角色', mes: '<推文>这个不该被收录。</推文>' });
+emit('message_received', chat.length - 1, 'normal');
+await new Promise(r => setTimeout(r, 40));
+check('推特：关掉解析后不再收录', twTweets().some(t => t.content === '这个不该被收录。'), false);
+api.settings.twitterCapture = true;
+
+// 缺补丁：资源端点 404 → patch-missing，且不回退
+journalEndpointAvailable = false;
+await api.reloadTwitter();
+check('推特：缺补丁 → 原因 patch-missing', api.describeTwitter().reason, 'patch-missing');
+check('推特：状态行红字点出补丁名',
+    String(registry.get('roleEx-twitter-status')?.textContent || '').includes('st-twitter-assets.patch'), true);
+check('推特：状态文字同时写进 title（标题行里被省略号截断时悬停可见）',
+    String(registry.get('roleEx-twitter-status')?.title || '').includes('st-twitter-assets.patch'), true);
+check('推特：iframe 在不可用时藏起来', String(registry.get('roleEx-twitter-frame')?.style?.display || ''), 'none');
+journalEndpointAvailable = true;
+
+// 群聊：本地判不可用，连请求都不发
+const twCallsBeforeGroup = assetCalls.length;
+const savedCtx2 = globalThis.SillyTavern.getContext;
+globalThis.SillyTavern.getContext = () => ({ ...savedCtx2(), groupId: 'g1' });
+await api.reloadTwitter();
+check('推特：群聊 → 原因 group', api.describeTwitter().reason, 'group');
+check('推特：群聊时不发任何资源请求', assetCalls.length, twCallsBeforeGroup);
+globalThis.SillyTavern.getContext = savedCtx2;
+await api.reloadTwitter();
+check('推特：切回单聊后恢复正常', api.describeTwitter().reason, null);
+
+// 「还没选角色」不是本模块出错：状态留空、不打红字、也不弹 Toast（但真去写盘时仍会被拒）
+const twSavedCtx3 = globalThis.SillyTavern.getContext;
+globalThis.SillyTavern.getContext = () => ({ ...twSavedCtx3(), characters: {}, characterId: undefined });
+await api.reloadTwitter();
+check('推特：未选角色 → 原因 no-character', api.describeTwitter().reason, 'no-character');
+check('推特：未选角色时状态行留空、不打红字',
+    String(registry.get('roleEx-twitter-status')?.textContent || '') === ''
+        && registry.get('roleEx-twitter-status')?.classList?.contains('roleEx-warn') === false, true);
+check('推特：未选角色时 iframe 仍然藏起来（没有落点就不画页面）',
+    String(registry.get('roleEx-twitter-frame')?.style?.display || ''), 'none');
+globalThis.SillyTavern.getContext = twSavedCtx3;
+await api.reloadTwitter();
+check('推特：切回有角色的会话后恢复正常', api.describeTwitter().reason, null);
+
+// ---- 关注 / 转发 / 点赞 的交互（点一下改数据并落盘，再点一下恢复） ----
+// 交互一律**就地**改 iframe 里的一个 textContent + class，不重建 srcdoc（重建会重载 iframe = 看见刷新动画）。
+// 所以断言分两层：数据层看落盘结果，渲染层先 reloadTwitter() 整帧重画再看 srcdoc。
+const twProfileNow = () => twRaw().trim().split('\n').map(l => { try { return JSON.parse(l); } catch (err) { return null; } })
+    .find(o => o && o.__roleExpansion === 'twitter-profile') || {};
+const twById = (id) => twTweets().find(t => t.id === id) || {};
+
+check('关注按钮初始是「关注」（带 btn-primary）',
+    /class="btn btn-primary" id="tw-follow">关注</.test(twFrameHtml()), true);
+
+const frameBeforeFollow = twFrameHtml();
+const followOne = await api.toggleTwitterFollow();
+check('点「关注」→ 返回 ok 且 followed 落盘为 true', followOne.ok === true && twProfileNow().followed, true);
+check('点「关注」→ 粉丝数 +1', twProfileNow().followers, '3241');
+check('点「关注」→ 不重建 srcdoc（没有刷新动画）', twFrameHtml(), frameBeforeFollow);
+await api.reloadTwitter();
+check('整帧重画后按钮是「正在关注」、不再是 btn-primary',
+    /id="tw-follow">正在关注</.test(twFrameHtml()) && !/class="btn btn-primary" id="tw-follow"/.test(twFrameHtml()), true);
+check('整帧重画后粉丝数也是新的（3,241）', twFrameHtml().includes('3,241'), true);
+await api.toggleTwitterFollow();
+check('再点一次 → followed 回到 false', twProfileNow().followed, false);
+check('再点一次 → 粉丝数回到 3240', twProfileNow().followers, '3240');
+await api.reloadTwitter();
+check('整帧重画后回到「关注」+ btn-primary', /class="btn btn-primary" id="tw-follow">关注</.test(twFrameHtml()), true);
+
+const twActionId = twTweets()[0].id;
+const likeBase = Number(twById(twActionId).stats.like) || 0;
+const frameBeforeLike = twFrameHtml();
+const likeOne = await api.toggleTweetAction(twActionId, 'like');
+check('点 ❤️ → 数值 +1', likeOne.ok === true && twById(twActionId).stats.like, likeBase + 1);
+check('点 ❤️ → liked 落盘为 true', twById(twActionId).liked, true);
+check('点 ❤️ → 不重建 srcdoc（就地改数字与 class）', twFrameHtml(), frameBeforeLike);
+await api.reloadTwitter();
+check('整帧重画后 ❤️ 带上 is-active（变粉）', /tweet-action-like is-active/.test(twFrameHtml()), true);
+await api.toggleTweetAction(twActionId, 'like');
+check('再点 ❤️ → 数值回到原值', twById(twActionId).stats.like, likeBase);
+await api.reloadTwitter();
+check('整帧重画后 liked 为 false 且不再 is-active',
+    twById(twActionId).liked === false && !/tweet-action-like is-active/.test(twFrameHtml()), true);
+
+const rtBase = Number(twById(twActionId).stats.retweet) || 0;
+const frameBeforeRt = twFrameHtml();
+await api.toggleTweetAction(twActionId, 'retweet');
+check('点 🔄 → 数值 +1 且 retweeted 落盘为 true',
+    twById(twActionId).stats.retweet === rtBase + 1 && twById(twActionId).retweeted === true, true);
+check('点 🔄 → 不重建 srcdoc', twFrameHtml(), frameBeforeRt);
+await api.reloadTwitter();
+check('整帧重画后 🔄 带上 is-active', /tweet-action-retweet is-active/.test(twFrameHtml()), true);
+await api.toggleTweetAction(twActionId, 'retweet');
+check('再点 🔄 → 数值与标记都恢复', twById(twActionId).stats.retweet === rtBase && twById(twActionId).retweeted === false, true);
+await api.reloadTwitter();
+check('整帧重画后 🔄 不再是 is-active', !/tweet-action-retweet is-active/.test(twFrameHtml()), true);
+
+// 写盘失败必须回滚，否则界面与磁盘会不一致
+journalEndpointAvailable = false;
+const frameBeforeFail = twFrameHtml();
+const failLike = await api.toggleTweetAction(twActionId, 'like');
+check('写盘失败 → 返回 ok:false', failLike.ok, false);
+check('写盘失败 → srcdoc 一点没变（连 DOM 都没动）', twFrameHtml(), frameBeforeFail);
+journalEndpointAvailable = true;
+const retryLike = await api.toggleTweetAction(twActionId, 'like');
+check('写盘失败后内存已回滚（重试得到 +1 而不是 +2）', retryLike.value, likeBase + 1);
+await api.toggleTweetAction(twActionId, 'like');
+
+
+// ---- 推文配图：有图渲染成 <img>，没图保持纯文字，文件读不到就不画（不裂图） ----
+const twImageTags = () => (twFrameHtml().match(/class="tweet-image"/g) || []).length;
+check('没有配图的推文渲染成纯文字样式（srcdoc 里没有 tweet-image）', twImageTags(), 0);
+
+const twPngBase64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]).toString('base64');
+const twImgKey = twJsonlKey();
+const twImgLines = twRaw().trim().split('\n').map(l => JSON.parse(l));
+const twImgTweet = twImgLines.find(o => o.__roleExpansion === 'twitter');
+twImgTweet.image = 'tweet-' + twImgTweet.id + '.png';
+const twWriteJsonl = () => assetFs.set(twImgKey, twImgLines.map(o => JSON.stringify(o)).join('\n') + '\n');
+
+assetFs.set('twitter|' + twImgTweet.image, twPngBase64);
+twWriteJsonl();
+await api.reloadTwitter();
+check('配图渲染成 <img class="tweet-image">', twImageTags(), 1);
+check('配图用 data URL 内联（不依赖静态路由）',
+    twFrameHtml().includes('src="data:image/png;base64,' + twPngBase64), true);
+
+assetFs.delete('twitter|' + twImgTweet.image);
+await api.reloadTwitter();
+check('配图文件读不到时不渲染 <img>（不会裂图）', twImageTags(), 0);
+
+twImgTweet.image = '../../evil.png';
+twWriteJsonl();
+await api.reloadTwitter();
+check('image 字段只认 tweet- 开头的单段 ASCII 名（写花了既不渲染、也不会漏进 srcdoc）',
+    twImageTags() === 0 && twFrameHtml().includes('evil.png') === false, true);
+
+const twImgRow = (registry.get('roleEx-twitter-list')?.children || []).find(n => n?.dataset?.twitterId === twImgTweet.id);
+nodeByText(twImgRow, '编辑')?.click();
+const twImgModal = (document.body.children || []).find(node => String(node.className).includes('roleEx-modal'));
+check('编辑弹窗里有「配图」行（上传图片 / 清除配图）',
+    !!nodeByText(twImgModal, '上传图片') && !!nodeByText(twImgModal, '清除配图'), true);
+nodeByText(twImgModal, '取消')?.click();
+
+twImgTweet.image = 'tweet-' + twImgTweet.id + '.png';
+assetFs.set('twitter|' + twImgTweet.image, twPngBase64);
+twWriteJsonl();
+await api.reloadTwitter();
+const twDelRow = (registry.get('roleEx-twitter-list')?.children || []).find(n => n?.dataset?.twitterId === twImgTweet.id);
+nodeByText(twDelRow, '删除')?.click();
+await new Promise(r => setTimeout(r, 80));
+check('删除推文时连配图文件一起删掉', assetFs.has('twitter|' + twImgTweet.image), false);
+check('删除后那条推文也没了', twTweets().some(t => t.id === twImgTweet.id), false);
+
+
+// ---- 资料区「认证」复选框的回填（曾经少了 dataset 标记 → F5 后回到未勾选） ----
+const twVerifiedInput = allNodes(registry.get('roleEx-twitter-section'), n => n?.dataset?.twitterField === 'verified')[0];
+check('认证复选框带 dataset.twitterField 标记（fillProfileInputs 才认得出它）', !!twVerifiedInput, true);
+check('默认（verified 未显式写 false）是勾选状态', twVerifiedInput?.checked, true);
+
+const twVKey = twJsonlKey();
+const twVLines = twRaw().trim().split('\n').map(l => JSON.parse(l));
+const twVProfile = twVLines.find(o => o.__roleExpansion === 'twitter-profile');
+const twVWrite = () => assetFs.set(twVKey, twVLines.map(o => JSON.stringify(o)).join('\n') + '\n');
+twVProfile.verified = false;
+twVWrite();
+await api.reloadTwitter();
+check('verified=false 时勾选框回到未勾选', twVerifiedInput?.checked, false);
+twVProfile.verified = true;
+twVWrite();
+await api.reloadTwitter();
+check('verified=true 时勾选框回到勾选', twVerifiedInput?.checked, true);
+
+
+// ---- 仿推特页面：固定高度的一屏，资料头固定、只有推文列表内部滚 ----
+// 背景（0.7.2 的 bug）：按内容量高度这条路走不通 —— 折叠块默认收起（display: none）时 iframe
+// 没有布局盒，load 那一刻 scrollHeight 是 0，展开后不会再量第二次，于是页面永远停在占位高度，
+// 第一张配图很高时下面的推文就再也看不到。所以改成 fixed height + 内部滚动：不量高度。
+const twPaneHtml = twFrameHtml();
+const twPane = twPaneHtml.slice(twPaneHtml.indexOf('class="tweets-container" id="tw-posts"'));
+const twPaneUntilBody = twPane.slice(0, twPane.indexOf('</body>'));
+check('推特：srcdoc 是固定高度的一屏（html/body 都 overflow: hidden，根视口不滚）',
+    /html,\s*body\s*\{\s*height:\s*100%;\s*overflow:\s*hidden;\s*\}/.test(twPaneHtml), true);
+check('推特：body 是 flex 竖排（头 + 列表两段）',
+    /body\s*\{\s*display:\s*flex;\s*flex-direction:\s*column;/.test(twPaneHtml), true);
+check('推特：资料头 .tw-head 不参与伸缩（固定不动）',
+    twPaneHtml.includes('.tw-head { flex: 0 0 auto; }'), true);
+check('推特：唯一的滚动容器是推文列表 #tw-posts',
+    /\.tweets-container\s*\{\s*flex:\s*1 1 auto;\s*min-height:\s*0;\s*overflow-y:\s*auto;/.test(twPaneHtml), true);
+check('推特：#tw-empty 在滚动容器里面（切标签时提示才出现在列表区）',
+    twPaneUntilBody.includes('id="tw-empty"'), true);
+check('推特：iframe 不带 scrolling="no"（能不能滚交给 CSS，不用这个老属性）',
+    registry.get('roleEx-twitter-frame')?.getAttribute('scrolling'), undefined);
+
+const twStyleSrc = readFileSync(fileURLToPath(new URL('../style.css', import.meta.url)), 'utf8');
+const twFrameCss = twStyleSrc.slice(twStyleSrc.indexOf('.roleEx-twitter-frame {'), twStyleSrc.indexOf('}', twStyleSrc.indexOf('.roleEx-twitter-frame {')));
+check('推特：iframe 高度由 CSS 写死（clamp，跟着视口），不再靠 JS 写 style.height',
+    /height:\s*clamp\(/.test(twFrameCss), true);
+check('推特：iframe 上不再有 min-height 占位（固定高度了）',
+    /min-height/.test(twFrameCss), false);
+await api.reloadTwitter();
+check('推特：父页面完全不写 style.height', registry.get('roleEx-twitter-frame')?.style?.height, undefined);
+
+// ---- 切换标签：滚动容器留在原地，只把里面的东西换成一句提示 ----
+const twFrameEl = registry.get('roleEx-twitter-frame');
+const twPostsEl = makeEl('div');
+const twEmptyEl = makeEl('div');
+const twNavButtons = ['posts', 'replies', 'likes'].map((tab) => {
+    const btn = makeEl('button');
+    btn.setAttribute('data-tab', tab);
+    return btn;
+});
+twFrameEl.contentDocument = {
+    body: {},
+    documentElement: {},
+    getElementById: (id) => (id === 'tw-posts' ? twPostsEl : (id === 'tw-empty' ? twEmptyEl : null)),
+    querySelectorAll: (sel) => (sel === '.nav-tab' ? twNavButtons : []),
+};
+const twFrameLoad = listeners.get('roleEx-twitter-frame:load');
+check('推特：iframe 的 load 事件接了线（和浏览器里同一条路径）', typeof twFrameLoad, 'function');
+twFrameLoad();
+check('推特：load 之后不会去量高度（没有任何 style.height 写入）', twFrameEl.style.height, undefined);
+twNavButtons[2].click();
+check('切到非「帖子」标签 → 滚动容器加 is-empty（里面的卡片靠 CSS 藏起来）',
+    twPostsEl.classList.contains('is-empty'), true);
+check('切到非「帖子」标签 → 提示显示在列表区且文案对得上标签名',
+    twEmptyEl.style.display === 'block' && twEmptyEl.textContent.includes('「喜欢」'), true);
+check('推特：滚动容器本身不能被藏（藏了就没得滚了）', twPostsEl.style.display, undefined);
+twNavButtons[0].click();
+check('切回「帖子」→ is-empty 撤掉、提示隐藏',
+    twPostsEl.classList.contains('is-empty') === false && twEmptyEl.style.display === 'none', true);
+
+
+// 源码层面：标签契约与端点前缀（改了名字而没改文档时能被这里挡住）
+check('推特：源码里是 <推文> / <推文时间> 这套标签契约',
+    allSrc.includes('<推文时间>') && allSrc.includes('<推文>') && allSrc.includes('</推文>'), true);
+check('推特：走的是框架的资源通道，不自己拼 fetch',
+    moduleSrc.includes('/api/role-expansion/asset') === false && allSrc.includes('/api/role-expansion/asset'), true);
+const twModuleSrc = ['index', 'store', 'stats', 'capture', 'render', 'ui']
+    .map(name => readFileSync(fileURLToPath(new URL('../modules/twitter/' + name + '.js', import.meta.url)), 'utf8'))
+    .join('\n');
+check('推特：模块源码里没有 <script>（srcdoc 里不放脚本）', twModuleSrc.includes('<script'), false);
+check('推特：iframe 里三个交互都由父页面接线（wireFrame 里有对应选择器）',
+    twModuleSrc.includes("getElementById('tw-follow')")
+        && twModuleSrc.includes('.tweet-action-like')
+        && twModuleSrc.includes('.tweet-action-retweet'), true);
+check('推特：模块源码里没有自己拼 fetch（走框架的资源通道）', twModuleSrc.includes('fetch('), false);
+check('推特：「还没选角色」不当错误显示（状态留空，不打红字）',
+    twModuleSrc.includes("const quiet = rt.state.reason === 'no-character';"), true);
+
+
 console.log(failed ? `\n${failed} / ${total} 项失败` : `\n全部通过（共 ${total} 项断言）`);
 process.exit(failed ? 1 : 0);

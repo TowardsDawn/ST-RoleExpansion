@@ -298,7 +298,7 @@ c.setExtensionPrompt(
 
 | 元素 | id / class | 语义 |
 | --- | --- | --- |
-| 外层区块 | `#roleEx-state-section`，图标 `fa-solid fa-heart-pulse`，`section('角色状态栏', { open: true })` | 默认展开 |
+| 外层区块 | `#roleEx-state-section`，图标 `fa-solid fa-heart-pulse`，`section('角色状态栏', { open: false })` | 默认收起（三个模块的一级区块都默认折叠） |
 | 注入提示词子区块 | `#roleEx-state-tpl-section`，图标 `fa-solid fa-wand-magic-sparkles`，`section('状态注入提示词', { open: false })` | **挂进 `s.content` 而不是 `s.root`** —— 这样它与面板正文走同一套 10px 间距，视觉上明确属于这个面板 |
 | 列表容器 | `#roleEx-state-list` + `.roleEx-list` | `renderStateList()` 的重绘目标；超过 420px 内部滚动 |
 | 列表项 | `.roleEx-state-row` / `.roleEx-state-name` / `.roleEx-state-value` / `.roleEx-state-edit` | 见下 |

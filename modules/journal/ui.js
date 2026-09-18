@@ -41,7 +41,7 @@ function setButtonBusy(busy) {
 }
 
 function buildJournalPanel() {
-    const s = section('日记', { open: true });
+    const s = section('日记', { open: false });
     s.root.setAttribute('id', 'roleEx-journal-section');
     iconFor(s.root, 'fa-solid fa-book');
 
@@ -341,10 +341,12 @@ function renderJournalList() {
     }
     list.innerHTML = '';
     if (!ui.journal.length) {
+        // 同上：「还没选角色」当空列表处理，不当报错
         const reason = ui.journalError;
+        const isError = !!reason && reason !== 'no-character';
         list.appendChild(el('div', {
-            class: reason ? 'roleEx-hint roleEx-warn' : 'roleEx-hint',
-            text: reason ? journalReasonText(reason) : '本会话还没有日记。',
+            class: isError ? 'roleEx-hint roleEx-warn' : 'roleEx-hint',
+            text: isError ? journalReasonText(reason) : '本会话还没有日记。',
         }));
     }
     const sorted = [...ui.journal].sort((a, b) => b.createdAt - a.createdAt);
@@ -409,6 +411,13 @@ function renderJournalStorageHint() {
     }
     hint.style.whiteSpace = 'pre-line';
     const reason = ui.journalError;
+    // ⚠️ 「还没选角色」不是出错（酒馆的常态）：不打红字，只说一句中性的话。
+    //    别的 reason（缺补丁 / 群聊 / 网络…）照旧红字。
+    if (reason === 'no-character') {
+        hint.classList.remove('roleEx-warn');
+        hint.textContent = `${ui.journal.length} 篇 · ${ui.selectedJournalIds.size} 篇已勾选\n选一个角色后才有落点。`;
+        return;
+    }
     if (reason) {
         hint.classList.add('roleEx-warn');
         hint.textContent = `${ui.journal.length} 篇 · ${ui.selectedJournalIds.size} 篇已勾选\n${journalReasonText(reason)}`;

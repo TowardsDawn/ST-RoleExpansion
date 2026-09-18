@@ -345,12 +345,14 @@ async function persistJournal() {
 async function reloadJournal() {
     ui.identity = currentChatIdentity();
     const { entries, error } = await loadJournalFile();
+    // 「还没选角色」不当错误：不弹 Toast（面板里也只是一句中性提示，不再打红字）
+    const notify = error === 'no-character' ? null : error;
     // 只有「原因变了」才弹一次：切会话/生成后都会 reload，否则会反复弹
-    if (error && error !== ui.journalNotifiedError) {
-        ui.journalNotifiedError = error;
-        toast('error', journalReasonText(error));
+    if (notify && notify !== ui.journalNotifiedError) {
+        ui.journalNotifiedError = notify;
+        toast('error', journalReasonText(notify));
     }
-    if (!error) {
+    if (!notify) {
         ui.journalNotifiedError = null;
     }
     ui.journal = entries;

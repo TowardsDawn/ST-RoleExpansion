@@ -1,0 +1,210 @@
+diff --git a/src/endpoints/role-expansion-assets.js b/src/endpoints/role-expansion-assets.js
+new file mode 100644
+index 0000000..63434a1
+--- /dev/null
++++ b/src/endpoints/role-expansion-assets.js
+@@ -0,0 +1,180 @@
++/**
++ * ST-RoleExpansion: 模块私有资源文件端点（头像 / 横幅等二进制，以及模块自己的文本文件）
++ *
++ * 由 patches/st-twitter-assets.patch 引入 —— 纯新增：只加这个文件，再在
++ * src/server-startup.js 挂一行；不动 role-expansion.js（日记端点）与任何原生逻辑。
++ *
++ * 路径：<user>/chats/<角色目录>/_RoleExpansion/<sub>/<name>
++ *   sub  只允许白名单里的模块名（默认 ['twitter']）
++ *   name 单段 ASCII（与酒馆 /api/files/upload 同一条规则），后缀在白名单里
++ *
++ * 路由挂在 /api/role-expansion 下，与日记端点同一个前缀：
++ *   POST /asset/save   { avatar_url, sub, name, text | base64 }
++ *   POST /asset/get    { avatar_url, sub, name } -> { exists, text } 或 { exists, base64, mime }
++ *   POST /asset/delete { avatar_url, sub, name } -> { ok, removed }
++ *
++ * 为什么必须由服务端提供：前端没有一条接口能写进 chats/
++ * （/api/files/* 只收单段 ASCII 名，/api/chats/* 的路径参数会被 sanitize-filename 抹掉 '/'）。
++ */
++
++import path from 'node:path';
++import fs from 'node:fs';
++
++import express from 'express';
++import sanitize from 'sanitize-filename';
++import { sync as writeFileSyncAtomic } from 'write-file-atomic';
++
++import { isPathUnderParent } from '../util.js';
++import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
++
++export const router = express.Router();
++
++/** 角色聊天目录下的插件私有目录（与 role-expansion.js 里的常量一致） */
++const PRIVATE_DIR = '_RoleExpansion';
++
++/** 允许的模块子目录白名单：想加就再加一个字符串 */
++const ALLOWED_SUBDIRS = ['twitter'];
++
++/** 允许的文件后缀白名单：图片 + 模块自己的 jsonl */
++const ALLOWED_EXTENSIONS = ['.jsonl', '.png', '.jpg', '.jpeg', '.webp', '.gif'];
++
++/** 与酒馆 /api/files/upload 同一条文件名规则（assets.js: validateAssetFileName） */
++const ALLOWED_NAME_RE = /^[a-zA-Z0-9_\-.]+$/;
++
++/** 体积上限：文本 16MB；二进制按 base64 解码后的字节数算 8MB */
++const MAX_TEXT_LENGTH = 16 * 1024 * 1024;
++const MAX_BINARY_BYTES = 8 * 1024 * 1024;
++
++const MIME_BY_EXT = {
++    '.jsonl': 'application/x-ndjson',
++    '.png': 'image/png',
++    '.jpg': 'image/jpeg',
++    '.jpeg': 'image/jpeg',
++    '.webp': 'image/webp',
++    '.gif': 'image/gif',
++};
++
++/**
++ * 解析资源文件的绝对路径。任何不合法输入返回 null，调用方一律回 400。
++ *
++ * @param {{ chats: string }} directories 用户目录集合
++ * @param {string} avatarUrl 角色头像文件名（酒馆惯例）
++ * @param {string} sub 模块子目录（白名单）
++ * @param {string} name 单段文件名
++ * @returns {{ dir: string, filePath: string, ext: string, isText: boolean } | null}
++ */
++export function resolveAssetPath(directories, avatarUrl, sub, name) {
++    const charDir = path.basename(String(avatarUrl ?? ''), '.png');
++    if (!charDir || charDir === '.' || charDir === '..') {
++        return null;
++    }
++
++    const folder = String(sub ?? '');
++    if (!ALLOWED_SUBDIRS.includes(folder)) {
++        return null;
++    }
++
++    const fileName = String(name ?? '');
++    if (!fileName || fileName.startsWith('.')) {
++        return null;
++    }
++    if (!ALLOWED_NAME_RE.test(fileName) || sanitize(fileName) !== fileName) {
++        return null;
++    }
++    const ext = path.extname(fileName).toLowerCase();
++    if (!ALLOWED_EXTENSIONS.includes(ext)) {
++        return null;
++    }
++
++    const charChatsDir = path.join(directories.chats, charDir);
++    const dir = path.join(charChatsDir, PRIVATE_DIR, folder);
++    const filePath = path.join(dir, fileName);
++
++    if (!isPathUnderParent(directories.chats, charChatsDir)) {
++        return null;
++    }
++    if (!isPathUnderParent(dir, filePath)) {
++        return null;
++    }
++
++    return { dir, filePath, ext, isText: ext === '.jsonl' };
++}
++
++router.post('/asset/get', validateAvatarUrlMiddleware, function (request, response) {
++    try {
++        const target = resolveAssetPath(request.user.directories, request.body?.avatar_url, request.body?.sub, request.body?.name);
++        if (!target) {
++            return response.status(400).send('Invalid asset path');
++        }
++        if (!fs.existsSync(target.filePath)) {
++            return response.send({ exists: false });
++        }
++        if (target.isText) {
++            return response.send({ exists: true, text: fs.readFileSync(target.filePath, 'utf8') });
++        }
++        const buffer = fs.readFileSync(target.filePath);
++        return response.send({ exists: true, base64: buffer.toString('base64'), mime: MIME_BY_EXT[target.ext] });
++    } catch (error) {
++        console.error('ST-RoleExpansion: failed to read asset file', error);
++        return response.sendStatus(500);
++    }
++});
++
++router.post('/asset/save', validateAvatarUrlMiddleware, function (request, response) {
++    try {
++        const target = resolveAssetPath(request.user.directories, request.body?.avatar_url, request.body?.sub, request.body?.name);
++        if (!target) {
++            return response.status(400).send('Invalid asset path');
++        }
++
++        const text = request.body?.text;
++        const base64 = request.body?.base64;
++        if (typeof text !== 'string' && typeof base64 !== 'string') {
++            return response.status(400).send('No text or base64 specified');
++        }
++
++        if (typeof text === 'string') {
++            if (text.length > MAX_TEXT_LENGTH) {
++                return response.status(413).send('Asset text is too large');
++            }
++            fs.mkdirSync(target.dir, { recursive: true });
++            writeFileSyncAtomic(target.filePath, text);
++            return response.send({ ok: true, bytes: Buffer.byteLength(text, 'utf8') });
++        }
++
++        const cleaned = String(base64).replace(/^data:[^;]+;base64,/, '');
++        if (!/^[A-Za-z0-9+/=\s]*$/.test(cleaned)) {
++            return response.status(400).send('Invalid base64 payload');
++        }
++        const buffer = Buffer.from(cleaned, 'base64');
++        if (!buffer.length) {
++            return response.status(400).send('Empty base64 payload');
++        }
++        if (buffer.length > MAX_BINARY_BYTES) {
++            return response.status(413).send('Asset binary is too large');
++        }
++        fs.mkdirSync(target.dir, { recursive: true });
++        writeFileSyncAtomic(target.filePath, buffer);
++        return response.send({ ok: true, bytes: buffer.length });
++    } catch (error) {
++        console.error('ST-RoleExpansion: failed to save asset file', error);
++        return response.sendStatus(500);
++    }
++});
++
++router.post('/asset/delete', validateAvatarUrlMiddleware, function (request, response) {
++    try {
++        const target = resolveAssetPath(request.user.directories, request.body?.avatar_url, request.body?.sub, request.body?.name);
++        if (!target) {
++            return response.status(400).send('Invalid asset path');
++        }
++        if (!fs.existsSync(target.filePath)) {
++            return response.send({ ok: true, removed: false });
++        }
++        fs.unlinkSync(target.filePath);
++        return response.send({ ok: true, removed: true });
++    } catch (error) {
++        console.error('ST-RoleExpansion: failed to delete asset file', error);
++        return response.sendStatus(500);
++    }
++});
+diff --git a/src/server-startup.js b/src/server-startup.js
+index e587fa2..3ad7552 100644
+--- a/src/server-startup.js
++++ b/src/server-startup.js
+@@ -51,7 +51,8 @@ import { router as dataMaidRouter } from './endpoints/data-maid.js';
+ import { router as backupsRouter } from './endpoints/backups.js';
+ import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
+ import { router as volcengineRouter } from './endpoints/volcengine.js';
+-import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
++import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
++import { router as roleExpansionAssetsRouter } from './endpoints/role-expansion-assets.js';
+ 
+ /**
+  * @typedef {object} ServerStartupResult
+@@ -186,7 +187,8 @@ export function setupPrivateEndpoints(app) {
+     app.use('/api/data-maid', dataMaidRouter);
+     app.use('/api/backups', backupsRouter);
+     app.use('/api/image-metadata', imageMetadataRouter);
+-    app.use('/api/role-expansion', roleExpansionRouter);
++    app.use('/api/role-expansion', roleExpansionRouter);
++    app.use('/api/role-expansion', roleExpansionAssetsRouter);
+ }
+ 
+ /**

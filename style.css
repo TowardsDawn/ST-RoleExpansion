@@ -138,6 +138,11 @@
     align-items: start;
 }
 
+/* 模块可以要求自己的区块横跨整行（推特那种宽内容）：在 buildPanelSection() 里给 root 加这个类 */
+.roleEx-scroll > .roleEx-span-all {
+    grid-column: 1 / -1;
+}
+
 .roleEx-scroll > * {
     min-width: 0;
     /* grid 项默认 stretch，会被拉高成整行高度；改成按内容自适应 */
@@ -706,6 +711,73 @@
     justify-content: space-between;
     font-weight: bold;
     gap: 8px;
+}
+
+/* --- 推特模块（modules/twitter）：仿推特页面 + 推文管理 --- */
+/* 仿推特页面是**固定高度**的一屏：资料头固定、只有推文列表内部滚。
+   ⚠️ 想调「可见推文有多高」就只改下面这一行：
+     - 中间那项 calc(100vh - N) 是**主项**，N 越小页面越高、列表越高；
+     - 第一个数是矮窗口的下限，第三个数是高窗口的上限。
+   页面长高的部分**全归推文列表**（#tw-posts 是 flex: 1 1 auto），所以调大它 = 直接调大可见推文区。
+   N = 80 是实测出来的账（视口 808 为例）：面板可用 645（= 视口 - 163），
+   区块外的两个模块区块 + 间距 ≈ 104，本区块除 iframe 外的固定开销 ≈ 136（实测）
+   → 645 - 104 - 136 = 405：想让面板一点不滚，页面只能 405px，列表几乎为零。
+   现在刻意让面板滚 ≈ 323px，把高度全留给列表；要换成「面板不滚」就把 N 改成 ≈ 405。
+   （这 136 已经包含「状态行 + 新增推文/刷新 塞进推文管理折叠块、那块默认收起」省下的 ≈ 82px，
+     以及三个折叠块标题削薄省下的 ≈ 12px；它们本来各占正文一行。） */
+/* 推特区块里的三个折叠块：标题行比别处薄一档（每个约 4px，合计约 12px），
+   加上状态行与工具行搬进「推文管理」（那块默认收起），一共给 iframe 腾出约 82px。
+   只作用于本模块 —— 日记 / 状态栏的折叠块保持原样。 */
+.roleEx-twitter-fold {
+    padding-top: 2px;
+}
+
+.roleEx-twitter-fold > .roleEx-fold-header {
+    padding: 1px 0;
+}
+
+.roleEx-twitter-frame {
+    width: 100%;
+    height: clamp(520px, calc(100vh - 80px), 1000px);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    background: #000;
+    display: block;
+}
+
+/* 资料区字段：一列一个（标签在上、控件在下）—— 不换行 flex 会把中文标签压成竖排 */
+.roleEx-twitter-field {
+    display: flex;
+    flex-flow: column;
+    gap: 4px;
+}
+
+.roleEx-twitter-row {
+    display: flex;
+    flex-flow: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.roleEx-twitter-row-main {
+    display: flex;
+    flex-flow: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.roleEx-twitter-row-time {
+    font-weight: bold;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+
+.roleEx-twitter-row-preview {
+    word-break: break-word;
 }
 
 /* --- 窄屏 --- */

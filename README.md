@@ -1,11 +1,8 @@
 # ST-RoleExpansion（角色扩展）
 
-**给 SillyTavern 加上「日记」与「角色状态栏」。**
+**一套持续完善的模块化、可扩展的ST扩展插件**
 
-让角色把经历过的事写成日记，并在之后的对话里记得；让生命值、好感度这类数值随剧情自动变化，
-而不是你手动维护。
-
-![version](https://img.shields.io/badge/version-0.5.0-blue)
+![version](https://img.shields.io/badge/version-0.8.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
@@ -19,12 +16,13 @@
 | --- | --- | --- |
 | 📔 **日记** | 勾选若干聊天楼层 → 模型以角色第一人称写一篇日记 → 存成按会话隔离的 `.jsonl`；勾选任意几篇注入后续对话，成为角色「记得的事」 | [modules/journal/README.md](modules/journal/README.md) |
 | ❤️ **角色状态栏** | 维护一组状态（`生命值 8/10`、`好感度 42`…），每次生成前自动注入；模型回复里的 `<名称>值</名称>` 会被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
+| 🐦 **推特** | 面板里是一张自包含的**仿推特页面**（**固定高度**：资料头钉住不动、只有推文列表内部滚）：头像 / 横幅 / 资料区由你编辑，推文正文由模型用 `<推文>…</推文>` 输出（也可以手动新增 / 编辑 / 置顶、给任意一条**配图**），主页上的 `关注`/`🔄`/`❤️` 可交互且有一定交互效果 | [modules/twitter/README.md](modules/twitter/README.md) |
 
-两个模块共用一个面板，入口是顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
+三个模块共用一个面板，入口是顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
 
 ### 设计原则：扩展只当「内容供应商」，预设完全归你管
 
-日记注入走的是酒馆原生的**有序提示词**机制 —— 预设里放一张 `marker: true` 卡片，
+日记注入走的是酒馆原生的**有序提示词**机制（只有日记模块用这条通道；推特模块不注入任何提示词） —— 预设里放一张 `marker: true` 卡片，
 它的位置、名字、启停全都在酒馆预设 UI 里管；扩展只**读**它，负责在每次生成时喂正文。
 
 - 不创建、不修改、不移动预设卡片
@@ -33,14 +31,15 @@
 
 ### ⚠️ 一个前提：需要给 ST 打一次补丁
 
-原版酒馆有两件事第三方扩展做不到，本扩展因此附带**两份极小的补丁**（都只做新增与放行判断，不改动原生行为）：
+原版酒馆有三件事第三方扩展做不到，本扩展因此附带**三份极小的补丁**（都只做新增与放行判断，不改动原生行为）：
 
 | 补丁 | 解决什么 | 不打会怎样 |
 | --- | --- | --- |
-| `patches/st-marker-prompt.patch`（约 162 行） | 运行时提示词源是硬编码的，第三方 marker 卡片没有编辑铅笔、没有启停开关 | 卡片上没开关和铅笔，日记注入不生效 |
-| `patches/st-journal-store.patch`（约 47 行） | 没有接口能让前端写进 `chats/<角色>/`，日记没地方按角色存放 | 日记整块不可用（面板红字提示缺补丁） |
+| `patches/st-marker-prompt.patch`（净新增约 162 行） | 运行时提示词源是硬编码的，第三方 marker 卡片没有编辑铅笔、没有启停开关 | 卡片上没开关和铅笔，日记注入不生效 |
+| `patches/st-journal-store.patch`（净新增约 134 行） | 没有接口能让前端写进 `chats/<角色>/`，日记没地方按角色存放 | 日记整块不可用（面板红字提示缺补丁） |
+| `patches/st-twitter-assets.patch`（净新增约 185 行） | 模块需要往自己的子目录里放文件（推特模块的 jsonl + 头像 + 横幅 + 推文配图） | 推特整块不可用（面板红字提示缺补丁） |
 
-**装好扩展 ≠ 装好了**，两份补丁都需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
+**装好扩展 ≠ 装好了**，三份补丁都需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
 
 ---
 
@@ -66,13 +65,13 @@
 
 - 纯前端、无构建步骤、无依赖：原生 ESM，丢进扩展目录就能跑
 - 一个面板管所有模块：顶部羽毛图标 → 抽屉式主面板（宽度取 `--sheldWidth`、高度到输入框上方）
-- **日记 / 角色状态栏都是可拆模块**：删掉 `modules/journal/` 或 `modules/state/` 整个目录（甚至两个都删），
+- **三个模块都是可拆模块**（`journal` / `state` / `twitter`）：删掉 `modules/<id>/` 整个目录（甚至全删），
   框架照常启动；文件在时也可以在「扩展」设置面板里单独**禁用**（刷新页面生效）。
   名录由 `modules/manifest.json` 驱动 —— 加一个模块只要放好目录 + 改这个 JSON，框架里没有任何模块名
-- 两个模块都拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
+- 模块全拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
   「扩展」设置面板里只剩框架自己的东西 —— 不会出现「空白面板 + 永远检测中」的假故障
 - 「存为默认设置」/「恢复默认设置」统一管**所有模块的设置项**（快照存进酒馆的扩展设置，重启仍在）
-- 配套离线自测（最小 DOM / ST 桩，**270 项断言**）+ 补丁端点 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
+- 配套离线自测（最小 DOM / ST 桩，**394 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
 
 **模块**（各自成文）
 
@@ -80,11 +79,15 @@
 | --- | --- | --- |
 | 📔 日记 | 勾选楼层 → 模型以角色第一人称写一篇日记 → 按会话存成 jsonl → 勾选任意几篇注入后续对话 | [modules/journal/README.md](modules/journal/README.md) |
 | ❤️ 角色状态栏 | 维护一组状态，生成前自动注入；回复里的 `<名称>值</名称>` 被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
+| 🐦 推特 | 固定高度的仿推特页面（资料头固定、只滚推文列表）：资料区自己编辑、推文由模型输出、可给推文配图、`关注`/`🔄`/`❤️` 可点并落盘；置顶最多一条，时间线新→旧 | [modules/twitter/README.md](modules/twitter/README.md) |
+
+---
+
 ## 环境要求
 
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
-| SillyTavern | **≥ 1.18.0** | 开发与验证版本。两份补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线，换版本前先 `git apply --check` |
+| SillyTavern | **≥ 1.18.0** | 开发与验证版本。三份补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线，换版本前先 `git apply --check` |
 | ST 接口 | Chat Completion 类 | 卡片与提示词管理器依赖 Chat Completion；文本补全类接口下面板会提示「尚未就绪」 |
 | ST 补丁 | **必须应用一次** | 见下方第 2 步 |
 | Node.js | ≥ 18（**仅自测需要**） | 扩展本身在浏览器里跑，装插件不需要 Node |
@@ -120,6 +123,7 @@ git clone https://github.com/TowardsDawn/ST-RoleExpansion.git ST-RoleExpansion
 ```bash
 git apply /path/to/ST-RoleExpansion/patches/st-marker-prompt.patch
 git apply /path/to/ST-RoleExpansion/patches/st-journal-store.patch
+git apply /path/to/ST-RoleExpansion/patches/st-twitter-assets.patch
 ```
 
 第一个补丁做了五件事（细节见[核心机制](#核心机制)）：
@@ -136,16 +140,21 @@ git apply /path/to/ST-RoleExpansion/patches/st-journal-store.patch
 （日记读写端点，写进 `chats/<角色>/_RoleExpansion/journals/`，带路径穿越防护与原子写），
 并在 `src/server-startup.js` 挂一行 `app.use('/api/role-expansion', …)`。
 
-> ⚠️ 这个补丁改的是**服务端**代码，打完必须**重启 ST 主进程**（不像前端 `scripts/*.js` 那样
-> `Ctrl+F5` 就能重载）。没打补丁不会静默出错：日记面板会红字写明缺哪个补丁。
+第三个补丁（`st-twitter-assets.patch`）也是纯新增：`src/endpoints/role-expansion-assets.js`
+（模块私有资源读写：文本 + base64 图片，带子目录 / 扩展名白名单、路径穿越双保险与体积上限），
+并在 `src/server-startup.js` 再挂一行。
 
-也可以按补丁内容手动改那三个文件。打完补丁后 **`Ctrl+F5` 强制刷新**（浏览器会缓存 `scripts/*.js`）。
+> ⚠️ 后两个补丁改的是**服务端**代码，打完必须**重启 ST 主进程**（不像前端 `scripts/*.js` 那样
+> `Ctrl+F5` 就能重载）。没打补丁不会静默出错：对应模块的面板会红字写明缺哪个补丁。
+
+也可以按补丁内容手动改那几个文件。打完补丁后 **`Ctrl+F5` 强制刷新**（浏览器会缓存 `scripts/*.js`）。
 
 ### 写预设卡片（日记模块用）
 
 日记注入走酒馆原生的**有序提示词**：预设里放一张 `marker: true` 卡片，它的位置、名字、启停全在预设 UI 里管，
 扩展只**读**它、并在每次生成时喂正文。要写入的 JSON 片段、`prompt_order` 每个块都要加一条的注意事项、
 以及 `examples/preset.example.json` 怎么用，都在 [modules/journal/README.md](modules/journal/README.md)。
+
 ### 验证一下
 
 刷新后打开控制台：
@@ -161,10 +170,13 @@ roleExpansion.logMarkerSupport()
 ## 快速开始
 
 1. 打开顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
-2. 面板里是**若干个可折叠区块** —— 默认是「日记」和「角色状态栏」两块，想用哪个就展开哪个。
-3. 各自的完整用法（怎么生成日记、状态怎么写、有哪些开关与坑）见模块文档：
-   [modules/journal/README.md](modules/journal/README.md) ｜ [modules/state/README.md](modules/state/README.md)。
+2. 面板里是**若干个可折叠区块** —— 默认三块：**推特**（横跨整行，在最上面）、日记、角色状态栏。
+3. 各自的完整用法（假的推特页面怎么用、怎么生成日记、状态怎么写、有哪些开关与坑）见模块文档：
+   [modules/twitter/README.md](modules/twitter/README.md) ｜ [modules/journal/README.md](modules/journal/README.md) ｜ [modules/state/README.md](modules/state/README.md)。
    本文只讲框架与安装。
+
+---
+
 ## 界面导览
 
 | 入口 | 说明 |
@@ -174,7 +186,7 @@ roleExpansion.logMarkerSupport()
 | 「角色管理」面板 | 角色卡编辑区中 `Chat Lore` 按钮右侧的羽毛按钮，一键打开面板 |
 | 「扩展」设置面板 | 「模块」表（装了哪些 / 启用禁用）、**各模块自己挂进来的设置区块**、「打开角色扩展面板」「存为默认设置」「恢复默认设置」都在这里 |
 
-面板里是**若干个可折叠区块**：一个模块挂一块（默认两块：日记 / 角色状态栏），每块内部还有自己的子区块。
+面板里是**若干个可折叠区块**：一个模块挂一块（默认三块：推特 / 日记 / 角色状态栏；推特那块由模块自己加 `roleEx-span-all` 横跨整行），每块内部还有自己的子区块。
 模块不在时那一块就不存在 —— 不会留下空壳，也不会出现「永远检测中」的假故障。
 
 主面板与各区块的 UI 约定（折叠箭头语义、过渡动画、两列布局、面板层级）见 [DEVELOPMENT.md](DEVELOPMENT.md) §4。
@@ -304,6 +316,7 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 
 | 模块 | id | 目录 | 用户文档 | 开发文档 |
 | --- | --- | --- | --- | --- |
+| 🐦 推特 | `twitter` | `modules/twitter/` | [README](modules/twitter/README.md) | [DEVELOPMENT](modules/twitter/DEVELOPMENT.md) |
 | 📔 日记 | `journal` | `modules/journal/` | [README](modules/journal/README.md) | [DEVELOPMENT](modules/journal/DEVELOPMENT.md) |
 | ❤️ 角色状态栏 | `state` | `modules/state/` | [README](modules/state/README.md) | [DEVELOPMENT](modules/state/DEVELOPMENT.md) |
 
@@ -311,9 +324,9 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 
 | 想要 | 怎么做 |
 | --- | --- |
-| 拆掉某个模块 | 删掉它的整个目录（`modules/journal/` 或 `modules/state/`），刷新页面 |
+| 拆掉某个模块 | 删掉它的整个目录（`modules/twitter/`、`modules/journal/` 或 `modules/state/`），刷新页面 |
 | 临时不要某个模块 | 「扩展」设置面板 →「模块」区块里取消勾选（**刷新页面生效**） |
-| 两个都拆掉 | 插件照常启动：面板显示「没有可用模块」，副标题「（无模块）」 |
+| 全部拆掉 | 插件照常启动：面板显示「没有可用模块」，副标题「（无模块）」 |
 | 排查 | `roleExpansion.modules()` → 每个模块的 `installed`（目录在不在）/ `enabled`（启没启用）/ `title` |
 
 ### 自己接一个模块
@@ -324,6 +337,9 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 
 模块可用的框架设施（`create(kernel)` 拿到的 `kernel`）、返回值约定（框架转发壳按同名调用）、
 启用开关、清单缺省与降级规则见 [DEVELOPMENT.md](DEVELOPMENT.md) §1.1。
+
+---
+
 ## 调试与自测
 
 ### 控制台 API（框架侧）
@@ -339,6 +355,13 @@ roleExpansion.resetToDefaults()    // =「恢复默认设置」
 roleExpansion.clearCustomDefaults()// 清除自定义基准，回到扩展内置默认
 roleExpansion.logMarkerSupport()   // 运行时提示词源（补丁）是否生效
 roleExpansion.patchPromptManagerFirstRender() // 手动补一次预设列表首屏渲染（幂等，不写预设）
+// —— 落盘：能不能写 / 写到哪 / 为什么不能（排查「写不进去」的第一步）——
+roleExpansion.journalAvailability()  roleExpansion.journalPathText()  roleExpansion.journalReasonText()
+roleExpansion.probeJournalStorage()  // 只读探针：真去读写一次，报回结果
+roleExpansion.assetPathText()        roleExpansion.probeAssetStorage('twitter')
+// —— 模块桥接（模块不在 / 被禁用时是空壳：调用返回 undefined，不抛）——
+roleExpansion.reloadTwitter()  roleExpansion.renderTwitter()  roleExpansion.describeTwitter()
+roleExpansion.toggleTweetAction(id, 'like' | 'retweet')  roleExpansion.toggleTwitterFollow()
 ```
 
 各模块自己的调试入口（日记的 `probeJournalStorage()` / `diagnoseJournalCard()`、状态的 `getStateList()` …）
@@ -347,8 +370,8 @@ roleExpansion.patchPromptManagerFirstRender() // 手动补一次预设列表首�
 ### 自测脚本
 
 ```bash
-npm test            # = node tools/smoke-test.mjs —— 270 项断言，纯 Node，不需要浏览器/酒馆
-npm run test:patch  # 补丁端点 e2e：从 patches/st-journal-store.patch 抽端点在 express 沙盒里真跑
+npm test            # = node tools/smoke-test.mjs —— 394 项断言，纯 Node，不需要浏览器/酒馆
+npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点在 express 沙盒里真跑（26 + 36 项）
 ```
 
 没有依赖，`node` 直接跑即可；`smoke-test.mjs` 会读取仓库自带的 `examples/preset.example.json`
@@ -397,14 +420,15 @@ npm run test:patch  # 补丁端点 e2e：从 patches/st-journal-store.patch 抽�
 <summary><b>日记写不出来 / 面板红字说缺补丁</b></summary>
 
 缺 `patches/st-journal-store.patch`（服务端代码，打完要**重启酒馆主进程**），或者当前是群聊。
-两种情况面板都会红字写明原因；细节见 [modules/journal/README.md](modules/journal/README.md)。
+两种情况面板都会红字写明原因；**「还没选角色」不算出错**（面板只给一句中性提示，不打红字、不弹 Toast）。
+细节见 [modules/journal/README.md](modules/journal/README.md)。
 
 </details>
 
 <details>
 <summary><b>ST 升级后一切失效</b></summary>
 
-升级/重装会覆盖 `public/scripts/*.js`（以及可能被覆盖的 `src/`），两份补丁都需要重新 `git apply`，
+升级/重装会覆盖 `public/scripts/*.js`（以及可能被覆盖的 `src/`），三份补丁都需要重新 `git apply`，
 然后 `Ctrl+F5`（改了服务端那份还要重启酒馆）。
 
 </details>
@@ -426,10 +450,15 @@ npm run test:patch  # 补丁端点 e2e：从 patches/st-journal-store.patch 抽�
   该规则带 `:has(.roleEx-top-drawer)` 守卫，只在扩展已装载时生效，并附
   `@supports not selector(:has(*))` 兜底。
 - 本扩展只走 `getContext()` 暴露的接口，**不依赖任何后端 server plugin**；
-  唯一需要服务端配合的是日记落盘，由 `patches/st-journal-store.patch` 提供。
-- **模块自己的限制写在模块文档里**：日记（群聊不支持、改名边界、隔离通道的推理剥块只认成块写法…）见
+  需要服务端配合的只有两处落盘（日记 jsonl、模块私有资源文件），分别由 `patches/st-journal-store.patch`
+  与 `patches/st-twitter-assets.patch` 提供。
+- **模块自己的限制写在模块文档里**：推特（群聊不支持、只收录纯文本推文、数字没有范围校验…）见
+  [modules/twitter/README.md](modules/twitter/README.md)；日记（群聊不支持、改名边界、隔离通道的推理剥块只认成块写法…）见
   [modules/journal/README.md](modules/journal/README.md)；状态（标签准入规则、新聊天状态为空…）见
   [modules/state/README.md](modules/state/README.md)。
+
+---
+
 ## 仓库结构
 
 ```text
@@ -438,20 +467,25 @@ ST-RoleExpansion/
 ├── index.js                          框架：设置 / 抽屉与主面板 / 扩展设置面板 / 模块系统
 ├── modules/                          **整个目录可以删**（见「模块」）
 │   ├── manifest.json                 模块清单（加/删模块只改这里 + 目录，不用动框架）
+│   ├── twitter/                      推特模块
+│   │   ├── README.md / DEVELOPMENT.md    本模块的用户文档 / 开发文档
+│   │   └── index / store / stats / capture / render / ui .js
 │   ├── journal/                      日记模块
-│   │   ├── README.md / DEVELOPMENT.md    日记模块的用户文档 / 开发文档
+│   │   ├── README.md / DEVELOPMENT.md
 │   │   └── index / storage / floors / generate / inject / ui .js
 │   └── state/                        角色状态栏模块
-│       ├── README.md / DEVELOPMENT.md    状态栏模块的用户文档 / 开发文档
+│       ├── README.md / DEVELOPMENT.md
 │       └── index / store / inject / ui .js
 ├── index.html                        酒馆「扩展」列表里的设置卡片模板（框架部分；模块自己往里挂区块）
 ├── style.css                         全部样式（统一 roleEx- 前缀）
-├── patches/                          对 ST 核心的两份最小补丁（见「打补丁」）
+├── patches/                          对 ST 核心的三份最小补丁（见「打补丁」）
 │   ├── st-marker-prompt.patch        运行时提示词源 + marker 卡片权限
-│   └── st-journal-store.patch        日记文件读写端点
+│   ├── st-journal-store.patch        日记文件读写端点
+│   └── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，270 项断言）
-│   ├── patch-endpoint-test.mjs       补丁端点 e2e（express 沙盒，可选）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，394 项断言）
+│   ├── patch-endpoint-test.mjs       日记端点 e2e（express 沙盒，可选）
+│   ├── patch-asset-test.mjs          资源端点 e2e（同上）
 │   └── check-filename.mjs            文件名合规校验器
 ├── examples/
 │   └── preset.example.json           参考预设（含日记卡片，可直接导入酒馆）
@@ -462,6 +496,9 @@ ST-RoleExpansion/
 ├── LICENSE
 └── .editorconfig / .gitattributes / .gitignore / package.json
 ```
+
+---
+
 ## 许可
 
 [MIT](LICENSE) © 2026 TowardsDawn
