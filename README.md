@@ -2,7 +2,7 @@
 
 **一套持续完善的模块化、可扩展的ST扩展插件**
 
-![version](https://img.shields.io/badge/version-0.8.0-blue)
+![version](https://img.shields.io/badge/version-0.10.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
@@ -14,15 +14,16 @@
 
 | 模块 | 它做什么 | 文档 |
 | --- | --- | --- |
-| 📔 **日记** | 勾选若干聊天楼层 → 模型以角色第一人称写一篇日记 → 存成按会话隔离的 `.jsonl`；勾选任意几篇注入后续对话，成为角色「记得的事」 | [modules/journal/README.md](modules/journal/README.md) |
+| 👕 **衣装打扮** | 维护「现在穿什么」：七个**固定分类**（头饰 / 上衣 / 下装 / 袜子 / 鞋子 / 内衣 / 内裤）+ 自建分类，每个分类一个备选表（**英文逗号**分隔）、**分类内可多选（叠穿）**；选中的衣装按 外 / 内 / 其他 三行分组注入后续对话，让模型的描写保持一致 | [modules/outfit/README.md](modules/outfit/README.md) |
 | ❤️ **角色状态栏** | 维护一组状态（`生命值 8/10`、`好感度 42`…），每次生成前自动注入；模型回复里的 `<名称>值</名称>` 会被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
-| 🐦 **推特** | 面板里是一张自包含的**仿推特页面**（**固定高度**：资料头钉住不动、只有推文列表内部滚）：头像 / 横幅 / 资料区由你编辑，推文正文由模型用 `<推文>…</推文>` 输出（也可以手动新增 / 编辑 / 置顶、给任意一条**配图**），主页上的 `关注`/`🔄`/`❤️` 可交互且有一定交互效果 | [modules/twitter/README.md](modules/twitter/README.md) |
+| 📔 **日记** | 勾选若干聊天楼层 → 模型以角色第一人称写一篇日记 → 存成按会话隔离的 `.jsonl`；勾选任意几篇注入后续对话，成为角色「记得的事」 | [modules/journal/README.md](modules/journal/README.md) |
+| 🐦 **推特** | 面板里是一张自包含的**仿推特页面**（**固定高度**：资料头钉住不动、只有推文列表内部滚）：头像 / 横幅 / 资料区由你编辑，推文正文由模型用 `<推文>…</推文>` 输出（也可以手动新增 / 编辑 / 置顶）；**点推文能进详情页**；媒体支持本地配图与 **URL 视频 / 动图**；`关注`/`🔄`/`❤️`/`🔖` 可交互并落盘 | [modules/twitter/README.md](modules/twitter/README.md) |
 
-三个模块共用一个面板，入口是顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
+**四个模块共用一个面板**，入口是顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
 
 ### 设计原则：扩展只当「内容供应商」，预设完全归你管
 
-日记注入走的是酒馆原生的**有序提示词**机制（只有日记模块用这条通道；推特模块不注入任何提示词） —— 预设里放一张 `marker: true` 卡片，
+日记与衣装注入走的是酒馆原生的**有序提示词**机制（只有这两个模块用这条通道；状态栏走 `setExtensionPrompt()`，推特模块不注入任何提示词） —— 预设里放一张 `marker: true` 卡片，
 它的位置、名字、启停全都在酒馆预设 UI 里管；扩展只**读**它，负责在每次生成时喂正文。
 
 - 不创建、不修改、不移动预设卡片
@@ -35,9 +36,9 @@
 
 | 补丁 | 解决什么 | 不打会怎样 |
 | --- | --- | --- |
-| `patches/st-marker-prompt.patch`（净新增约 162 行） | 运行时提示词源是硬编码的，第三方 marker 卡片没有编辑铅笔、没有启停开关 | 卡片上没开关和铅笔，日记注入不生效 |
-| `patches/st-journal-store.patch`（净新增约 134 行） | 没有接口能让前端写进 `chats/<角色>/`，日记没地方按角色存放 | 日记整块不可用（面板红字提示缺补丁） |
-| `patches/st-twitter-assets.patch`（净新增约 185 行） | 模块需要往自己的子目录里放文件（推特模块的 jsonl + 头像 + 横幅 + 推文配图） | 推特整块不可用（面板红字提示缺补丁） |
+| `patches/st-marker-prompt.patch`（净新增约 151 行） | 运行时提示词源是硬编码的，第三方 marker 卡片没有编辑铅笔、没有启停开关 | 卡片上没开关和铅笔，日记与衣装注入不生效 |
+| `patches/st-journal-store.patch`（净新增约 131 行） | 没有接口能让前端写进 `chats/<角色>/`，日记没地方按角色存放 | 日记整块不可用（面板红字提示缺补丁） |
+| `patches/st-twitter-assets.patch`（净新增约 182 行） | 模块需要往自己的子目录里放文件（推特的 jsonl + 头像 + 横幅 + 本地配图、**衣装的 jsonl**）；端点的子目录白名单必须是 `['twitter', 'outfit']` | 推特整块不可用（面板红字提示缺补丁）；衣装也读写不了 |
 
 **装好扩展 ≠ 装好了**，三份补丁都需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
 
@@ -65,21 +66,22 @@
 
 - 纯前端、无构建步骤、无依赖：原生 ESM，丢进扩展目录就能跑
 - 一个面板管所有模块：顶部羽毛图标 → 抽屉式主面板（宽度取 `--sheldWidth`、高度到输入框上方）
-- **三个模块都是可拆模块**（`journal` / `state` / `twitter`）：删掉 `modules/<id>/` 整个目录（甚至全删），
+- **四个模块都是可拆模块**（`outfit` / `state` / `journal` / `twitter`）：删掉 `modules/<id>/` 整个目录（甚至全删），
   框架照常启动；文件在时也可以在「扩展」设置面板里单独**禁用**（刷新页面生效）。
   名录由 `modules/manifest.json` 驱动 —— 加一个模块只要放好目录 + 改这个 JSON，框架里没有任何模块名
 - 模块全拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
   「扩展」设置面板里只剩框架自己的东西 —— 不会出现「空白面板 + 永远检测中」的假故障
 - 「存为默认设置」/「恢复默认设置」统一管**所有模块的设置项**（快照存进酒馆的扩展设置，重启仍在）
-- 配套离线自测（最小 DOM / ST 桩，**394 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
+- 配套离线自测（最小 DOM / ST 桩，**591 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
 
-**模块**（各自成文）
+**模块**（各自成文）（按主面板里的区块顺序排列 = `modules/manifest.json` 的 `modules[]` 顺序）
 
 | 模块 | 一句话 | 文档 |
 | --- | --- | --- |
-| 📔 日记 | 勾选楼层 → 模型以角色第一人称写一篇日记 → 按会话存成 jsonl → 勾选任意几篇注入后续对话 | [modules/journal/README.md](modules/journal/README.md) |
+| 👕 衣装打扮 | 固定分类 + 自建分类，每个分类一个逗号分隔的备选表；**分类内多选（叠穿）**，选中的衣装按 外 / 内 / 其他 分组注入后续对话 | [modules/outfit/README.md](modules/outfit/README.md) |
 | ❤️ 角色状态栏 | 维护一组状态，生成前自动注入；回复里的 `<名称>值</名称>` 被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
-| 🐦 推特 | 固定高度的仿推特页面（资料头固定、只滚推文列表）：资料区自己编辑、推文由模型输出、可给推文配图、`关注`/`🔄`/`❤️` 可点并落盘；置顶最多一条，时间线新→旧 | [modules/twitter/README.md](modules/twitter/README.md) |
+| 📔 日记 | 勾选楼层 → 模型以角色第一人称写一篇日记 → 按会话存成 jsonl → 勾选任意几篇注入后续对话 | [modules/journal/README.md](modules/journal/README.md) |
+| 🐦 推特 | 固定高度的仿推特页面（资料头固定、只滚推文列表）：资料区自己编辑、推文由模型输出、**点推文进详情页**、媒体支持本地配图与 URL 视频 / 动图、`关注`/`🔄`/`❤️`/`🔖` 可点并落盘；置顶最多一条，时间线新→旧 | [modules/twitter/README.md](modules/twitter/README.md) |
 
 ---
 
@@ -87,7 +89,7 @@
 
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
-| SillyTavern | **≥ 1.18.0** | 开发与验证版本。三份补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线，换版本前先 `git apply --check` |
+| SillyTavern | **≥ 1.18.0** | 开发与验证版本。三份补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线（**1.19.0 已复验**：三份补丁都能 `git apply` 干净落地，只带 9 行 / 1 行偏移，结果文件与 1.18.0 一致），换版本前先 `git apply --check` |
 | ST 接口 | Chat Completion 类 | 卡片与提示词管理器依赖 Chat Completion；文本补全类接口下面板会提示「尚未就绪」 |
 | ST 补丁 | **必须应用一次** | 见下方第 2 步 |
 | Node.js | ≥ 18（**仅自测需要**） | 扩展本身在浏览器里跑，装插件不需要 Node |
@@ -142,7 +144,22 @@ git apply /path/to/ST-RoleExpansion/patches/st-twitter-assets.patch
 
 第三个补丁（`st-twitter-assets.patch`）也是纯新增：`src/endpoints/role-expansion-assets.js`
 （模块私有资源读写：文本 + base64 图片，带子目录 / 扩展名白名单、路径穿越双保险与体积上限），
-并在 `src/server-startup.js` 再挂一行。
+并在 `src/server-startup.js` 再挂一行。它的子目录白名单是 **`['twitter', 'outfit']`** ——
+推特与衣装两个模块共用这一份端点，各写自己的子目录。
+
+> ⚠️ **从旧版升级上来的人（0.9.0 及更早）**：白名单那一行是从 `['twitter']` 改成 `['twitter', 'outfit']` 的
+> **同行替换、不增删行**，所以补丁文件本身能 `git apply --check` 干净通过，但
+> **`src/endpoints/role-expansion-assets.js` 在你机器上已经存在**，重新 `git apply` 那份补丁会失败（`already exists`）。
+> 正确做法是**手动改那一行**：打开 `<酒馆>/src/endpoints/role-expansion-assets.js`，
+> 把 `const ALLOWED_SUBDIRS = ['twitter'];` 改成 `const ALLOWED_SUBDIRS = ['twitter', 'outfit'];`，
+> 存档后**重启酒馆主进程**。不改也能用其它三个模块，但衣装的读写会全部被服务端以 **400** 拒掉
+> —— 表现与「缺补丁」**同级**：衣装面板**状态行红字**（文案直接告诉你改 `ALLOWED_SUBDIRS` 并重启酒馆）、
+> 两栏置灰，写盘会弹同一条提示；控制台记一行
+> `probe outfit storage: 服务端拒绝了 outfit 路径（invalid-path / 400）—— 资源端点的白名单里没有 outfit。`
+> **改完那一行之后怎么让它生效**：探针每个页面只**认真探一次**并缓存结果，所以
+> - 若你是在**页面已经打开着**的情况下补的补丁 / 改的白名单 → **重启酒馆主进程后再刷新页面（F5）**，
+>   或者**关掉再重新打开一次「角色扩展」面板**（后者有 3 秒节流，且只在失败态下才会真的重探）；
+> - **面板一直开着不动时不会自动恢复** —— 这是刻意的粒度选择（失败态不轮询），必须重新打开面板或刷新页面。
 
 > ⚠️ 后两个补丁改的是**服务端**代码，打完必须**重启 ST 主进程**（不像前端 `scripts/*.js` 那样
 > `Ctrl+F5` 就能重载）。没打补丁不会静默出错：对应模块的面板会红字写明缺哪个补丁。
@@ -151,9 +168,11 @@ git apply /path/to/ST-RoleExpansion/patches/st-twitter-assets.patch
 
 ### 写预设卡片（日记模块用）
 
-日记注入走酒馆原生的**有序提示词**：预设里放一张 `marker: true` 卡片，它的位置、名字、启停全在预设 UI 里管，
-扩展只**读**它、并在每次生成时喂正文。要写入的 JSON 片段、`prompt_order` 每个块都要加一条的注意事项、
-以及 `examples/preset.example.json` 怎么用，都在 [modules/journal/README.md](modules/journal/README.md)。
+日记与衣装注入走酒馆原生的**有序提示词**：预设里各放一张 `marker: true` 卡片（标识分别是
+`roleExpansionJournal` 与 `roleExpansionOutfit`），它们的位置、名字、启停全在预设 UI 里管，
+扩展只**读**它们、并在每次生成时喂正文。要写入的 JSON 片段、`prompt_order` 每个块都要加一条的注意事项、
+以及 `examples/preset.example.json` 怎么用，都在 [modules/journal/README.md](modules/journal/README.md)；
+衣装那份在 [modules/outfit/README.md](modules/outfit/README.md)。
 
 ### 验证一下
 
@@ -163,16 +182,18 @@ git apply /path/to/ST-RoleExpansion/patches/st-twitter-assets.patch
 roleExpansion.logMarkerSupport()
 ```
 
-看到「ST 补丁已生效」即安装完成。然后去预设 UI 确认那张卡片**有开关、有铅笔**。
+看到「ST 补丁已生效」即安装完成。然后去预设 UI 确认那两张卡片（日记 / 衣装）**有开关、有铅笔**。
 
 ---
 
 ## 快速开始
 
 1. 打开顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
-2. 面板里是**若干个可折叠区块** —— 默认三块：**推特**（横跨整行，在最上面）、日记、角色状态栏。
-3. 各自的完整用法（假的推特页面怎么用、怎么生成日记、状态怎么写、有哪些开关与坑）见模块文档：
-   [modules/twitter/README.md](modules/twitter/README.md) ｜ [modules/journal/README.md](modules/journal/README.md) ｜ [modules/state/README.md](modules/state/README.md)。
+2. 面板里是**若干个可折叠区块** —— 默认四块：**衣装打扮**、**角色状态栏**、**日记**、**推特**
+   （衣装与推特两块横跨整行，推特在最下面）。
+3. 各自的完整用法（假的推特页面怎么用、怎么生成日记、状态怎么写、衣装怎么选、有哪些开关与坑）见模块文档：
+   [modules/outfit/README.md](modules/outfit/README.md) ｜ [modules/state/README.md](modules/state/README.md) ｜
+   [modules/journal/README.md](modules/journal/README.md) ｜ [modules/twitter/README.md](modules/twitter/README.md)。
    本文只讲框架与安装。
 
 ---
@@ -186,7 +207,7 @@ roleExpansion.logMarkerSupport()
 | 「角色管理」面板 | 角色卡编辑区中 `Chat Lore` 按钮右侧的羽毛按钮，一键打开面板 |
 | 「扩展」设置面板 | 「模块」表（装了哪些 / 启用禁用）、**各模块自己挂进来的设置区块**、「打开角色扩展面板」「存为默认设置」「恢复默认设置」都在这里 |
 
-面板里是**若干个可折叠区块**：一个模块挂一块（默认三块：推特 / 日记 / 角色状态栏；推特那块由模块自己加 `roleEx-span-all` 横跨整行），每块内部还有自己的子区块。
+面板里是**若干个可折叠区块**：一个模块挂一块（默认四块：衣装打扮 / 角色状态栏 / 日记 / 推特；**顺序就是 `modules/manifest.json` 里 `modules[]` 的顺序**。衣装与推特两块由模块自己加 `roleEx-span-all` 横跨整行 —— 衣装在最上面那条整行，推特在最下面独占最后一行），每块内部还有自己的子区块。
 模块不在时那一块就不存在 —— 不会留下空壳，也不会出现「永远检测中」的假故障。
 
 主面板与各区块的 UI 约定（折叠箭头语义、过渡动画、两列布局、面板层级）见 [DEVELOPMENT.md](DEVELOPMENT.md) §4。
@@ -231,6 +252,8 @@ ST_API.registerRuntimePromptSource('roleExpansionJournal', () => 当前勾选日
     toggle: true,               // 允许用卡片上的开关启停
 });
 ```
+
+衣装模块用的是同一条通道、同一个形状，只是 `identifier` 换成 `roleExpansionOutfit`、来源名换成 `角色扩展（衣装）`。
 
 <details>
 <summary><b>补丁的五处改动，以及各自缺失时的症状</b></summary>
@@ -306,32 +329,37 @@ initExtensions()    ← 扩展脚本此刻才被求值、才注册运行时源
 
 「是否注入主聊天」这件事**只有预设卡片一个开关**（刻意不提供第二个开关）：开关打开 → 扩展提供正文、正常注入；
 关闭 → 运行时源返回空串、不注入，面板显示「🔴 已停用（不注入）」；扩展**绝不擅自改回**你的选择。
-具体到日记卡片的行为与诊断输出，见 [modules/journal/README.md](modules/journal/README.md)。
+这套契约对**日记与衣装两张卡片同时成立**；具体到各卡片的行为与诊断输出，见
+[modules/journal/README.md](modules/journal/README.md) 与 [modules/outfit/README.md](modules/outfit/README.md)。
 
 ---
 
 ## 模块
 
-一个模块 = `modules/<id>/` 一个目录，自带文档、可单独拆掉：
+一个模块 = `modules/<id>/` 一个目录，自带文档、可单独拆掉（下表按主面板里的区块顺序）：
 
 | 模块 | id | 目录 | 用户文档 | 开发文档 |
 | --- | --- | --- | --- | --- |
-| 🐦 推特 | `twitter` | `modules/twitter/` | [README](modules/twitter/README.md) | [DEVELOPMENT](modules/twitter/DEVELOPMENT.md) |
-| 📔 日记 | `journal` | `modules/journal/` | [README](modules/journal/README.md) | [DEVELOPMENT](modules/journal/DEVELOPMENT.md) |
+| 👕 衣装打扮 | `outfit` | `modules/outfit/` | [README](modules/outfit/README.md) | [DEVELOPMENT](modules/outfit/DEVELOPMENT.md) |
 | ❤️ 角色状态栏 | `state` | `modules/state/` | [README](modules/state/README.md) | [DEVELOPMENT](modules/state/DEVELOPMENT.md) |
+| 📔 日记 | `journal` | `modules/journal/` | [README](modules/journal/README.md) | [DEVELOPMENT](modules/journal/DEVELOPMENT.md) |
+| 🐦 推特 | `twitter` | `modules/twitter/` | [README](modules/twitter/README.md) | [DEVELOPMENT](modules/twitter/DEVELOPMENT.md) |
 
 ### 装上 / 拆掉 / 禁用
 
 | 想要 | 怎么做 |
 | --- | --- |
-| 拆掉某个模块 | 删掉它的整个目录（`modules/twitter/`、`modules/journal/` 或 `modules/state/`），刷新页面 |
+| 拆掉某个模块 | 删掉它的整个目录（`modules/outfit/`、`modules/state/`、`modules/journal/` 或 `modules/twitter/`），刷新页面 |
 | 临时不要某个模块 | 「扩展」设置面板 →「模块」区块里取消勾选（**刷新页面生效**） |
 | 全部拆掉 | 插件照常启动：面板显示「没有可用模块」，副标题「（无模块）」 |
 | 排查 | `roleExpansion.modules()` → 每个模块的 `installed`（目录在不在）/ `enabled`（启没启用）/ `title` |
 
 ### 自己接一个模块
 
-1. 建 `modules/<你的 id>/index.js`，`export default` 一个描述符：`{ id, title, icon, defaults?, create(kernel), settingsBlock?(kernel) }`；
+1. 建 `modules/<你的 id>/index.js`，`export default` 一个描述符：`{ id, title, icon, defaults?, create(kernel) }`，
+   **可选能力写在 `create(kernel)` 返回的那个对象上**（`buildPanelSection()` / `settingsBlock(kernel)` / `services`，
+   以及**预留、框架目前不读**的 `debug` —— 全仓没有任何 `desc.debug` 的读取代码）；
+   `settingsBlock` 早期写在描述符上的写法框架仍然兼容，但新代码请写在返回值上；
 2. 在 `modules/manifest.json` 的 `modules` 数组里加一条 `{ id, path: "./<你的 id>/index.js", title, icon }`（`path` 相对清单文件）；
 3. 框架启动时 `fetch` 清单并 `import` 你的入口 —— **框架里没有任何模块名**，不需要改 `index.js`。
 
@@ -350,6 +378,9 @@ roleExpansion.ui                   // 共享运行时状态：各模块把运行
 roleExpansion.modules()            // 模块清单：installed / enabled / title / icon
 roleExpansion.moduleManifest()     // 清单本身：URL、是否降级、条目
 roleExpansion.openPanel()          // 打开面板
+roleExpansion.toggleDrawerState()  // 开/关本抽屉（自带「打开一个时收起其他未锁定的」）
+roleExpansion.layoutMainPanel()    // 重算面板位置与高度（改窗口 / 改 --sheldWidth 后手动补一次）
+roleExpansion.applyPanelPin()      // 不带参数 = 从扩展设置的独立键读回锁定状态并应用一次
 roleExpansion.saveAsDefaults()     // =「存为默认设置」
 roleExpansion.resetToDefaults()    // =「恢复默认设置」
 roleExpansion.clearCustomDefaults()// 清除自定义基准，回到扩展内置默认
@@ -359,18 +390,21 @@ roleExpansion.patchPromptManagerFirstRender() // 手动补一次预设列表首�
 roleExpansion.journalAvailability()  roleExpansion.journalPathText()  roleExpansion.journalReasonText()
 roleExpansion.probeJournalStorage()  // 只读探针：真去读写一次，报回结果
 roleExpansion.assetPathText()        roleExpansion.probeAssetStorage('twitter')
+                                     // 衣装用同一个探针：probeAssetStorage('outfit')
 // —— 模块桥接（模块不在 / 被禁用时是空壳：调用返回 undefined，不抛）——
 roleExpansion.reloadTwitter()  roleExpansion.renderTwitter()  roleExpansion.describeTwitter()
-roleExpansion.toggleTweetAction(id, 'like' | 'retweet')  roleExpansion.toggleTwitterFollow()
+roleExpansion.toggleTweetAction(id, 'like' | 'retweet' | 'bookmark')  roleExpansion.toggleTwitterFollow()
+roleExpansion.reloadOutfit()   roleExpansion.renderOutfit()    roleExpansion.ensureOutfitRuntimeSource()
+roleExpansion.adoptOutfitCardStateFromPreset()  roleExpansion.updateOutfitPresetCardHint()
 ```
 
-各模块自己的调试入口（日记的 `probeJournalStorage()` / `diagnoseJournalCard()`、状态的 `getStateList()` …）
-写在各自模块文档的「调试入口」一节。
+各模块自己的调试入口（日记的 `probeJournalStorage()` / `diagnoseJournalCard()`、状态的 `getStateList()`、
+衣装的 `ensureOutfitRuntimeSource()` …）写在各自模块文档的「调试入口」一节。
 
 ### 自测脚本
 
 ```bash
-npm test            # = node tools/smoke-test.mjs —— 394 项断言，纯 Node，不需要浏览器/酒馆
+npm test            # = node tools/smoke-test.mjs —— 591 项断言，纯 Node，不需要浏览器/酒馆
 npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点在 express 沙盒里真跑（26 + 36 项）
 ```
 
@@ -426,6 +460,17 @@ npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点�
 </details>
 
 <details>
+<summary><b>衣装面板红字说缺补丁，但我明明打过 <code>st-twitter-assets.patch</code></b></summary>
+
+0.10.0 起那个端点的子目录白名单是 `['twitter', 'outfit']`。**从旧版升级上来的人**要手动改这一行：
+打开 `<酒馆>/src/endpoints/role-expansion-assets.js`，把 `const ALLOWED_SUBDIRS = ['twitter'];`
+改成 `const ALLOWED_SUBDIRS = ['twitter', 'outfit'];`，然后**重启酒馆主进程**。
+**不要**重新 `git apply` 那份补丁 —— 那个文件已经存在，会以 `already exists` 失败。
+细节见[打补丁](#打补丁必须)。
+
+</details>
+
+<details>
 <summary><b>ST 升级后一切失效</b></summary>
 
 升级/重装会覆盖 `public/scripts/*.js`（以及可能被覆盖的 `src/`），三份补丁都需要重新 `git apply`，
@@ -444,6 +489,8 @@ npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点�
   所以任何一个展开的顶部抽屉（世界书、扩展设置、用户设置…）都会**盖住**面板 ——
   这是刻意的（反过来会让别家面板用不了）。锁定（🔒）只表示「打开别的抽屉时不自动关闭本面板」，
   不改变层级。想继续用面板，把盖住它的抽屉关掉、或把面板锁上后重新点一次羽毛图标即可。
+  **锁定状态会被记住**：F5 / Ctrl+F5 / 重启酒馆之后仍是锁定的（和酒馆自己的抽屉锁定一样）；
+  它存在扩展设置的独立键里，所以「恢复默认设置」不会顺手解锁 —— 要解锁就自己点一下 🔒。
 - 顶部工具栏图标间距由本扩展的 CSS 统一归一：各入口的 `.drawer-icon` 左右内边距归零，
   间距完全交给 `--roleEx-topbar-gap`（默认 26px）。图标是 32px 等宽，所以
   **中心间距 = 32 + gap ≈ 58px**；想更紧/更松只改这一个变量（`18px` 约 50px / `34px` 约 66px）。
@@ -452,7 +499,8 @@ npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点�
 - 本扩展只走 `getContext()` 暴露的接口，**不依赖任何后端 server plugin**；
   需要服务端配合的只有两处落盘（日记 jsonl、模块私有资源文件），分别由 `patches/st-journal-store.patch`
   与 `patches/st-twitter-assets.patch` 提供。
-- **模块自己的限制写在模块文档里**：推特（群聊不支持、只收录纯文本推文、数字没有范围校验…）见
+- **模块自己的限制写在模块文档里**：衣装（群聊不支持、**只有单向注入**、固定分类不可改名删除、没有导入导出…）见
+  [modules/outfit/README.md](modules/outfit/README.md)；推特（群聊不支持、FLV 与 URL 媒体有约束、数字没有范围校验…）见
   [modules/twitter/README.md](modules/twitter/README.md)；日记（群聊不支持、改名边界、隔离通道的推理剥块只认成块写法…）见
   [modules/journal/README.md](modules/journal/README.md)；状态（标签准入规则、新聊天状态为空…）见
   [modules/state/README.md](modules/state/README.md)。
@@ -467,23 +515,26 @@ ST-RoleExpansion/
 ├── index.js                          框架：设置 / 抽屉与主面板 / 扩展设置面板 / 模块系统
 ├── modules/                          **整个目录可以删**（见「模块」）
 │   ├── manifest.json                 模块清单（加/删模块只改这里 + 目录，不用动框架）
-│   ├── twitter/                      推特模块
+│   ├── outfit/                       衣装打扮模块（清单第一条 → 主面板最上面那块）
 │   │   ├── README.md / DEVELOPMENT.md    本模块的用户文档 / 开发文档
-│   │   └── index / store / stats / capture / render / ui .js
+│   │   └── index / store / inject / ui .js
+│   ├── state/                        角色状态栏模块
+│   │   ├── README.md / DEVELOPMENT.md
+│   │   └── index / store / inject / ui .js
 │   ├── journal/                      日记模块
 │   │   ├── README.md / DEVELOPMENT.md
 │   │   └── index / storage / floors / generate / inject / ui .js
-│   └── state/                        角色状态栏模块
+│   └── twitter/                      推特模块
 │       ├── README.md / DEVELOPMENT.md
-│       └── index / store / inject / ui .js
+│       └── index / store / stats / capture / render / ui .js
 ├── index.html                        酒馆「扩展」列表里的设置卡片模板（框架部分；模块自己往里挂区块）
 ├── style.css                         全部样式（统一 roleEx- 前缀）
 ├── patches/                          对 ST 核心的三份最小补丁（见「打补丁」）
 │   ├── st-marker-prompt.patch        运行时提示词源 + marker 卡片权限
 │   ├── st-journal-store.patch        日记文件读写端点
-│   └── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点
+│   └── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点（子目录白名单 twitter / outfit）
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，394 项断言）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，591 项断言）
 │   ├── patch-endpoint-test.mjs       日记端点 e2e（express 沙盒，可选）
 │   ├── patch-asset-test.mjs          资源端点 e2e（同上）
 │   └── check-filename.mjs            文件名合规校验器

@@ -790,7 +790,8 @@ function iconFor(sectionRoot, iconClass) {
  * 所以后插入的节点也能折叠，动画/图标切换都是现成的。
  *
  * ⚠️ 初始 display 必须在这里显式写死，不能交给 CSS。
- * 酒馆的 `.inline-drawer-content { display: none }`（style.css:5535）默认就是收起状态，
+ * 酒馆的 `.inline-drawer-content { display: none }` 默认就是收起状态（1.18 在 style.css:5535、
+ * 1.19 在 5543 —— 行号会随版本漂移，认规则名即可），
  * 而原生处理器只会 toggle —— 它不知道初始状态，也没法替我们补上「展开」。
  * 所以 `open: true` 时若不主动显示，就会出现「箭头朝上（展开态）但内容实际收着」，
  * 与 `open: false` 的折叠块方向正好相反，看起来就像箭头写反了。两份状态必须一起设。
@@ -828,6 +829,59 @@ function collapsible(title, { open = true } = {}) {
 
 /** 面板最大高度的兜底值（拿不到视口高度时用） */
 const PANEL_MAX_HEIGHT_FALLBACK = 620;
+
+/**
+ * 「锁定」这类**界面偏好**不走 settings，而是扩展设置容器里的独立键。
+ *
+ * 为什么不能放进 settings：settings 会被「恢复默认设置」整体替换、也会被「存为默认设置」快照带走，
+ * 而锁定只描述界面长什么样，不该跟着这两个按钮走（酒馆自己也是单独存的，见 RossAscends-mods.js
+ * 里的 accountStorage.setItem('WINavLockOn', …)）。
+ *
+ * 为什么能跨刷新 / 重启：扩展设置容器由酒馆落进 settings.json（服务端 + 按用户），
+ * F5 / Ctrl+F5 / 重启酒馆主进程都只是重新读它一遍 —— 前提是读写这个键，而不是只留在内存里。
+ */
+const UI_STATE_KEY = `${MODULE_NAME}_ui`;
+
+function loadUiState() {
+    const stored = ctx()?.extensionSettings?.[UI_STATE_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function saveUiState(patch) {
+    const c = ctx();
+    if (c?.extensionSettings) {
+        c.extensionSettings[UI_STATE_KEY] = Object.assign(loadUiState(), patch);
+    }
+    saveSettingsDebounced();
+}
+
+/**
+ * 把锁定同步到四处，缺一处就会「看着锁了其实没锁」：
+ *   1. `ui.panelPinned` —— 逻辑判据（点空白处不自动关闭、打开时收别人）；
+ *   2. 面板上的 `pinnedOpen` —— **真正生效的那个类**：酒馆的 doNavbarIconClick 与
+ *      document 级自动关闭找的都是 `.openDrawer:not(.pinnedOpen)`；
+ *   3. 工具栏图标上的 `drawerPinnedOpen` —— 酒馆把别家图标的 `.openIcon` 重置回关闭态时
+ *      找的是 `.openIcon:not(.drawerPinnedOpen)`；不加上它，锁定的面板还开着、羽毛图标却显示成关闭，
+ *      而酒馆给 WI / 左右侧栏加的就是这个类；
+ *   4. 复选框 —— 视觉。
+ *
+ * **不传参数 = 读回已保存的偏好**：启动（insertDrawer）走的就是这条默认值，所以刷新 / 重启后锁定还在。
+ */
+function applyPanelPin(pinned = loadUiState().panelPinned === true) {
+    ui.panelPinned = pinned === true;
+    const content = document.getElementById(ID.content);
+    if (content) {
+        content.classList.toggle('pinnedOpen', ui.panelPinned);
+        const input = q('#roleEx-panel-pin', content);
+        if (input) {
+            input.checked = ui.panelPinned;
+        }
+    }
+    // 图标在 .drawer-toggle 里面（结构与 toggleDrawerState() 取图标时同一条路径）
+    const icon = document.getElementById(ID.drawer)?.querySelector('.drawer-toggle')?.querySelector('.drawer-icon');
+    icon?.classList.toggle('drawerPinnedOpen', ui.panelPinned);
+    return ui.panelPinned;
+}
 
 function insertDrawer() {
     const holder = document.getElementById('top-settings-holder');
@@ -941,12 +995,13 @@ function insertDrawer() {
         }
     });
 
+    // 锁定状态从这里读回（存扩展设置的独立键）：F5 / Ctrl+F5 / 重启酒馆之后依然是锁定的
+    applyPanelPin();
     const pinInput = q('#roleEx-panel-pin', content);
     if (pinInput) {
-        pinInput.checked = ui.panelPinned;
         pinInput.addEventListener('change', () => {
-            ui.panelPinned = pinInput.checked;
-            content.classList.toggle('pinnedOpen', ui.panelPinned);
+            applyPanelPin(pinInput.checked);
+            saveUiState({ panelPinned: ui.panelPinned });
         });
     }
 
@@ -1115,6 +1170,7 @@ async function onPanelOpened() {
     renderFloors();
     await reloadJournal();
     renderStateList();
+    renderOutfit();
     // 卡片由用户维护；这里只确保运行时源已注册并刷新状态文案
     ensureRuntimePromptSource();
     adoptCardStateFromPreset();
@@ -1226,6 +1282,7 @@ async function initExtensionSettingsPanel(attempt = 0) {
 function callJournal(fn, ...args) { return callModule('journal', fn, ...args); }
 function callState(fn, ...args) { return callModule('state', fn, ...args); }
 function callTwitter(fn, ...args) { return callModule('twitter', fn, ...args); }
+function callOutfit(fn, ...args) { return callModule('outfit', fn, ...args); }
 
 // —— 日记模块 ——
 function ensureRuntimePromptSource(...a) { return callJournal('ensureRuntimePromptSource', ...a); }
@@ -1262,6 +1319,15 @@ function renderTwitter(...a) { return callTwitter('renderTwitter', ...a); }
 function describeTwitter(...a) { return callTwitter('describeTwitter', ...a); }
 function toggleTweetAction(...a) { return callTwitter('toggleTweetAction', ...a); }
 function toggleTwitterFollow(...a) { return callTwitter('toggleTwitterFollow', ...a); }
+
+// —— 衣装模块 ——
+function ensureOutfitRuntimeSource(...a) { return callOutfit('ensureOutfitRuntimeSource', ...a); }
+function adoptOutfitCardStateFromPreset(...a) { return callOutfit('adoptOutfitCardStateFromPreset', ...a); }
+function updateOutfitPresetCardHint(...a) { return callOutfit('updateOutfitPresetCardHint', ...a); }
+function renderOutfit(...a) { return callOutfit('renderOutfit', ...a); }
+function reloadOutfit(...a) { return callOutfit('reloadOutfit', ...a); }
+// 衣装模块这个函数与日记的**同名**，壳名加前缀区分（模块那边的名字不变）
+function patchOutfitPromptManagerFirstRender(...a) { return callOutfit('patchPromptManagerFirstRender', ...a); }
 
 // ============================================================================
 // 模块系统：日记 / 角色状态栏都是「可拆模块」
@@ -1451,7 +1517,7 @@ function moduleStatus() {
 
 /**
  * 让「已启用模块」往扩展设置面板里塞自己的区块（可选能力）：
- *   descriptor.settingsBlock(kernel) → DOM 节点
+ *   api.settingsBlock(kernel) → DOM 节点（早期写在描述符上的 settingsBlock 也兼容）
  * 框架不关心谁有、长什么样；模块没装 / 被禁用时对应区块自然不存在 ——
  * 这样「模块被拆掉却还挂着一块永远『检测中…』的 UI」就不可能发生。
  */
@@ -1462,11 +1528,18 @@ function renderModuleSettingsBlocks(root) {
     }
     box.textContent = '';
     MODULES.forEach((desc) => {
-        if (!desc.api || typeof desc.settingsBlock !== 'function') {
+        // 没装 / 被禁用 → 不挂任何东西（这是「拆掉模块不会留下一块空 UI」的保证）
+        if (!desc.api) {
+            return;
+        }
+        // 能力按约定挂在 create(kernel) 的返回值（desc.api）上；早期写法把它挂在描述符上，
+        // 那条路继续兼容。holder.settingsBlock(...) 的 this 自然指向真正持有它的那一层。
+        const holder = typeof desc.api.settingsBlock === 'function' ? desc.api : desc;
+        if (typeof holder.settingsBlock !== 'function') {
             return;
         }
         try {
-            const node = desc.settingsBlock(kernel);
+            const node = holder.settingsBlock(kernel);
             if (node) {
                 box.append(node);
             }
@@ -1560,6 +1633,7 @@ function bindEvents() {
         // 面板没打开时也把日记读进来，保证预设卡片随时有内容可提供
         scheduleBackgroundJournalLoad();
         reloadTwitter();
+        reloadOutfit();
     });
 
     eventSource.on(eventTypes.MESSAGE_RECEIVED, () => {
@@ -1592,6 +1666,9 @@ function bindEvents() {
             ensureRuntimePromptSource();
             adoptCardStateFromPreset();
             updatePresetCardHint();
+            ensureOutfitRuntimeSource();
+            adoptOutfitCardStateFromPreset();
+            updateOutfitPresetCardHint();
         }, 60);
     };
     if (eventTypes.OAI_PRESET_CHANGED_AFTER) {
@@ -1608,6 +1685,10 @@ function bindEvents() {
         ensureRuntimePromptSource();
         adoptCardStateFromPreset();
         updatePresetCardHint();
+        // 兜底：registerRuntimeSourceEarly() 的重试在慢机器上可能还没跑完
+        ensureOutfitRuntimeSource();
+        adoptOutfitCardStateFromPreset();
+        updateOutfitPresetCardHint();
         scheduleBackgroundJournalLoad();
         reloadTwitter();
     });
@@ -1619,6 +1700,8 @@ function bindEvents() {
                 setTimeout(() => {
                     adoptCardStateFromPreset();
                     updatePresetCardHint();
+                    adoptOutfitCardStateFromPreset();
+                    updateOutfitPresetCardHint();
                 }, 200);
             });
         }
@@ -1645,11 +1728,25 @@ const scheduleBackgroundJournalLoad = debounce(async () => {
  * 所以这里在模块求值后立刻注册；registerRuntimePromptSource 尚未就绪时按帧重试。
  */
 function registerRuntimeSourceEarly(tries = 0) {
-    if (ensureRuntimePromptSource()) {
-        // 注册成功必须马上补一次预设列表渲染：首次渲染早于扩展激活，
-        // 不补的话「不打开会话就看不到铅笔和开关」。
+    // 每个源都是三态：true = 已注册 / false = 补丁或时机未到（值得重试）/
+    // undefined = 模块不在册或被禁用（不归框架管：不能重试，也不能报错）。
+    // 必须写成 `=== true` / `=== false` 比对，绝不能用 if (ensureX())——
+    // 否则「模块被拆掉」会被当成注册失败，变成空转重试 + 一条假告警。
+    const journal = ensureRuntimePromptSource();
+    const outfit = ensureOutfitRuntimeSource();
+    // 注册成功必须马上补一次预设列表渲染：首次渲染早于扩展激活，
+    // 不补的话「不打开会话就看不到铅笔和开关」。两个模块各持自己的补渲染标记
+    // 与去抖定时器，所以各补各的（pm.render 是整表重渲染，两边都调只是多一次
+    // 重复渲染，代价可忽略）；日记模块被拆掉时衣装这条照旧成立。
+    if (journal === true) {
         patchPromptManagerFirstRender();
-        return true;
+    }
+    if (outfit === true) {
+        patchOutfitPromptManagerFirstRender();
+    }
+    // 只有 false 才算「还没到位、继续等」
+    if (journal !== false && outfit !== false) {
+        return journal === true || outfit === true;
     }
     if (tries >= 20) {
         logMarkerSupport();
@@ -1715,6 +1812,8 @@ globalThis.roleExpansion = {
     openPanel,
     toggleDrawerState,
     layoutMainPanel,
+    /** 面板锁定：不传参数 = 从扩展设置的独立键读回并应用一次（排查「锁定没恢复」） */
+    applyPanelPin,
     saveAsDefaults,
     resetToDefaults,
     clearCustomDefaults,
@@ -1736,6 +1835,12 @@ globalThis.roleExpansion = {
     describeTwitter,
     toggleTweetAction,
     toggleTwitterFollow,
+    /** 衣装模块（模块不在时是空壳） */
+    reloadOutfit,
+    renderOutfit,
+    ensureOutfitRuntimeSource,
+    adoptOutfitCardStateFromPreset,
+    updateOutfitPresetCardHint,
     // —— 模块提供的（模块不在时是空壳：调用返回 undefined，不抛）——
     // 想确认某个名字到底有没有，看 roleExpansion.modules() 里的 installed / enabled
     reloadJournal,

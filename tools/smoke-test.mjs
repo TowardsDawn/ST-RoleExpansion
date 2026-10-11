@@ -209,12 +209,20 @@ globalThis.getComputedStyle = () => ({
 globalThis.confirm = () => true;
 globalThis.alert = () => { };
 globalThis.prompt = () => '';
-globalThis.toastr = { info: () => { }, success: () => { }, warning: () => { }, error: () => { } };
+/** Toast 记录：只为了断言「该报错时确实报了」（空实现的行为不变，谁都不该依赖它的返回值） */
+const toasts = [];
+const recordToast = (kind) => (message) => { toasts.push({ kind, message }); };
+globalThis.toastr = {
+    info: recordToast('info'), success: recordToast('success'),
+    warning: recordToast('warning'), error: recordToast('error'),
+};
 
 /** 假的「服务器文件系统」，用于验证 jsonl 落盘/读回 */
 const fakeFs = new Map();
 /** 服务端补丁是否可用：false 模拟「没打补丁」—— 酒馆对未知 /api 路由回 404（HTML） */
 let journalEndpointAvailable = true;
+/** 资源端点的 HTTP 覆盖：400 = 服务端拒绝了路径（旧版补丁的白名单里没有 outfit）；null = 正常处理 */
+let assetHttpStatus = null;
 /** 端点调用记录 */
 const journalCalls = [];
 /** 模块私有资源（推特模块用它存 jsonl + 头像 + 横幅）：key = '<sub>|<name>' */
@@ -240,6 +248,9 @@ globalThis.fetch = async (url, options = {}) => {
         assetCalls.push({ route: u, body });
         if (!journalEndpointAvailable) {
             return { ok: false, status: 404, text: async () => 'Cannot POST ' + u, json: async () => ({}) };
+        }
+        if (assetHttpStatus) {
+            return { ok: false, status: assetHttpStatus, text: async () => 'rejected: ' + u, json: async () => ({}) };
         }
         const key = String(body.sub) + '|' + String(body.name);
         const isText = String(body.name || '').endsWith('.jsonl');
@@ -292,6 +303,8 @@ const fakeSettings = {
 let renderCount = 0;
 /** 模拟 ST 侧的运行时正文源注册表 */
 const runtimeSources = new Map();
+/** identifier -> 注册时给的 options（补丁据此放开 marker 卡片的「铅笔 + 开关」授权） */
+const runtimeSourceOptions = new Map();
 const promptManager = {
     configuration: { prefix: 'completion_', promptOrder: { strategy: 'global', dummyId: DUMMY_ID } },
     serviceSettings: fakeSettings,
@@ -334,8 +347,9 @@ globalThis.SillyTavern = {
         chatCompletionSettings: fakeSettings,
         promptManager,
         /** 模拟 ST 打上补丁后的 API；测试里可动态增删以覆盖两条分支 */
-        registerRuntimePromptSource: (identifier, getContent) => {
+        registerRuntimePromptSource: (identifier, getContent, options) => {
             runtimeSources.set(String(identifier), getContent);
+            runtimeSourceOptions.set(String(identifier), options);
         },
         setExtensionPrompt: (key, value, position, depth, scan, role) => {
             captured[key] = { value, position, depth, scan, role };
@@ -350,7 +364,9 @@ globalThis.SillyTavern = {
             rawCalls.push(params);
             return nextRawText ?? '# 测试\n这是日记正文。';
         },
-        renderExtensionTemplateAsync: async () => '',
+        // 酒馆的真实行为：返回扩展目录下的模板文件。自测里直接读 index.html ——
+        // 扩展设置面板（模块自建区块挂靠的那个容器）必须按真实模板建起来才验得到。
+        renderExtensionTemplateAsync: async () => readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8'),
         eventSource: {
             on: (evt, fn) => { (map[evt] = map[evt] || []).push(fn); },
             off: () => { },
@@ -838,14 +854,24 @@ journalSectionHead?.click();
 check('再点一次收起（还原现场）', journalSectionEl?.children?.[1]?.style?.display, 'none');
 // 后面的断言都只读 DOM 结构，不需要它可见 —— 让它保持收起（顺便验证「默认折叠」这条约定）
 
-// ---- 日记面板新增「提示词注入」区块，且必须排在「新日记」之上 ----
+// ---- 日记面板的正文层次：平铺的状态行 + 同级折叠块（与推特模块同一套，不再有 .roleEx-block / 嵌套 section）----
 const journalBody = journalSectionEl?.children?.[1];
-const injectBlockEl = registry.get('roleEx-inject-block');
-const newJournalBlockEl = registry.get('roleEx-new-journal-block');
-check('日记面板新增「提示词注入」区块', !!injectBlockEl, true);
-check('「提示词注入」排在「新日记」之前',
-    (journalBody?.children || []).indexOf(injectBlockEl) !== -1
-    && (journalBody?.children || []).indexOf(injectBlockEl) < (journalBody?.children || []).indexOf(newJournalBlockEl), true);
+/** 直接子节点的可读标记：优先 id，其次第一个 class（stub DOM 里 checkboxRow 这类节点没有 id） */
+const nodeTag = (n) => String(n?.id || String(n?.className || '').split(' ')[0] || String(n?.tagName || '').toLowerCase());
+check('日记面板正文的直接子节点 = 状态行 + 5 个同级折叠块',
+    (journalBody?.children || []).map(nodeTag),
+    ['roleEx-inject-status', 'roleEx-new-journal-fold', 'roleEx-card-fold',
+        'roleEx-floors-fold', 'roleEx-journal-fold', 'roleEx-main-prompt-fold']);
+check('「新日记」是折叠块（原来是 .roleEx-block 里的 roleEx-label 标题）',
+    String(registry.get('roleEx-new-journal-fold')?.className).includes('inline-drawer'), true);
+check('「新日记」默认展开（body 显式 display:block）',
+    registry.get('roleEx-new-journal-fold')?.children?.[1]?.style?.display, 'block');
+check('「角色设定」「参考聊天楼层」现在是它的同级（不再是它的子级）',
+    nodeTag(registry.get('roleEx-card-fold')?.parentElement) === 'roleEx-section-body'
+    && registry.get('roleEx-card-fold')?.parentElement === registry.get('roleEx-new-journal-fold')?.parentElement, true);
+check('日记主提示词也是同级折叠块（不再是一个嵌套的 section）',
+    registry.get('roleEx-main-prompt-fold')?.parentElement === registry.get('roleEx-floors-fold')?.parentElement
+    && String(registry.get('roleEx-main-prompt-fold')?.className).includes('inline-drawer'), true);
 
 // ---- 日记面板：「全选」「清空」是两个独立按钮（不再合并成一个会变文案的按钮） ----
 const selectAllBtn = registry.get('roleEx-select-all');
@@ -861,6 +887,17 @@ check('点「全选」勾选全部', api.ui.selectedJournalIds.size, 2);
 check('点「全选」后文案不变', selectAllBtn?.textContent, '全选');
 clearAllBtn?.click();
 check('点「清空」取消全部勾选', api.ui.selectedJournalIds.size, 0);
+
+// ---- 楼层选择框：列表本身就是「参考聊天楼层」下的一个标准区块 ----
+const floorsBoxEl = registry.get('roleEx-floors');
+check('楼层选择框带 roleEx-block（和别人一样的区块底色 / 圆角 / 内距）',
+    String(floorsBoxEl?.className).includes('roleEx-block'), true);
+check('它是「参考聊天楼层」折叠体的直接子节点（就在这块折叠块下）',
+    floorsBoxEl?.parentElement === registry.get('roleEx-floors-fold')?.children?.[1], true);
+const floorsCssBody = readFileSync(fileURLToPath(new URL('../style.css', import.meta.url)), 'utf8')
+    .split('.roleEx-floors {')[1]?.split('}')[0] ?? '';
+check('楼层框不再自己画边框 / 圆角（交给 .roleEx-block），但保留 260px 滚动上限',
+    /border[^:]*:/.test(floorsCssBody) === false && /max-height:\s*260px/.test(floorsCssBody), true);
 
 // ---- 参考聊天楼层：去掉「最近 30 楼」，新增「第 N ~ M 楼」区间行 ----
 const floorsFoldEl = registry.get('roleEx-floors-fold');
@@ -929,7 +966,9 @@ for (let n = mainPromptEl; n; n = n.parentElement) {
 }
 check('编辑框一路挂到日记面板 section 上（不是悬空的孤立节点）',
     promptChain.includes('roleEx-journal-section'), true);
-check('主提示词区块默认收起但可点开（section 自带 roleEx-open 切换）',
+check('主提示词折叠块默认收起（body 显式 display:none）',
+    registry.get('roleEx-main-prompt-fold')?.children?.[1]?.style?.display, 'none');
+check('日记面板自己是 section（外层展开 / 收起不走折叠块那套）',
     String(registry.get('roleEx-journal-section')?.children?.[0]?.className || '').includes('roleEx-section-header'), true);
 
 // ---- 「关于」面板已取消：内容并入日记面板的存储说明，且不带版本号 ----
@@ -940,21 +979,51 @@ const noteText = String(storageNote?.innerHTML ?? '');
 check('存储说明指向角色聊天目录下的私有子目录',
     noteText.includes('chats/&lt;角色&gt;/_RoleExpansion/journals/RoleExpansion_journal') && noteText.includes('一篇日记一行'), true);
 const scrollEl = registry.get('roleEx-scroll');
-check('主面板里是「推特」「日记」「角色状态栏」三块', scrollEl?.children?.length, 3);
-check('推特区块排在最上面（模块清单顺序）', String(scrollEl?.children?.[0]?.id || ''), 'roleEx-twitter-section');
-check('推特区块横跨整行（roleEx-span-all）', scrollEl?.children?.[0]?.classList?.contains('roleEx-span-all'), true);
+check('主面板里是「衣装打扮」「角色状态栏」「日记」「推特」四块', scrollEl?.children?.length, 4);
+check('区块顺序 = 模块清单顺序（衣装打扮 / 角色状态栏 / 日记 / 推特）',
+    (scrollEl?.children || []).map(c => String(c.id)).join(','),
+    'roleEx-outfit-section,roleEx-state-section,roleEx-journal-section,roleEx-twitter-section');
+// 整行区块不再只有推特：清单首块（衣装打扮）与末块（推特）都横跨整行，
+// 中间两块（角色状态栏 / 日记）两列并排 —— 所以推特已经不是第一块了。
+check('衣装打扮与推特两块都横跨整行（roleEx-span-all）',
+    scrollEl?.children?.[0]?.classList?.contains('roleEx-span-all') === true
+    && scrollEl?.children?.[3]?.classList?.contains('roleEx-span-all') === true, true);
+check('中间两块（角色状态栏 / 日记）不横跨整行（两列并排）',
+    [1, 2].every(i => scrollEl?.children?.[i]?.classList?.contains('roleEx-span-all') === false), true);
+check('推特不再是第一块（衣装打扮排最前）',
+    scrollEl?.children?.[0]?.id === 'roleEx-outfit-section' && scrollEl?.children?.[0]?.id !== 'roleEx-twitter-section', true);
 check('推特区块里有 iframe / 状态行 / 推文管理列表',
     !!registry.get('roleEx-twitter-frame') && !!registry.get('roleEx-twitter-status') && !!registry.get('roleEx-twitter-list'), true);
 
-// ---- 「状态注入提示词」是「角色状态栏」面板内部的子区块 ----
-const tplSectionEl = registry.get('roleEx-state-tpl-section');
-check('状态注入提示词区块存在', !!tplSectionEl, true);
+// ---- 「状态注入提示词」是「角色状态栏」面板正文里的同级折叠块 ----
+const tplFoldEl = registry.get('roleEx-state-tpl-fold');
+check('状态注入提示词折叠块存在', !!tplFoldEl, true);
+check('它是折叠块（原来是一个嵌套的 section = 另一个层级）',
+    String(tplFoldEl?.className).includes('inline-drawer'), true);
 const tplChain = [];
-for (let n = tplSectionEl; n; n = n.parentElement) {
+for (let n = tplFoldEl; n; n = n.parentElement) {
     tplChain.push(n.id || '');
 }
 check('它挂在角色状态栏面板内（而不是和面板平级）', tplChain.includes('roleEx-state-section'), true);
 check('注入提示词文本框能在其中被找到', !!registry.get('roleEx-state-inject-prompt'), true);
+const tplParent = tplFoldEl?.parentElement;
+check('状态列表折叠块也是同一个父容器（同级）',
+    registry.get('roleEx-state-list-fold')?.parentElement === tplParent, true);
+check('状态栏正文里的每个折叠块都同级（没有任何一层套一层）',
+    (tplParent?.children || []).filter(c => String(c.className).includes('inline-drawer')).length, 2);
+
+// ---- 四个模块的正文层次统一：直接子节点里不能有 .roleEx-block，也不能有嵌套的 .roleEx-section ----
+for (const sectionId of ['roleEx-outfit-section', 'roleEx-twitter-section', 'roleEx-journal-section', 'roleEx-state-section']) {
+    const kids = registry.get(sectionId)?.children?.[1]?.children || [];
+    check(sectionId + ' 正文里没有 .roleEx-block（层次已拉平）',
+        kids.some(c => String(c.className).includes('roleEx-block')), false);
+    check(sectionId + ' 正文里没有嵌套的 .roleEx-section（没有子面板层级）',
+        kids.some(c => String(c.className).includes('roleEx-section')), false);
+}
+check('角色状态栏正文的直接子节点 = 5 个平铺开关 + 2 个同级折叠块',
+    (registry.get('roleEx-state-section')?.children?.[1]?.children || []).map(nodeTag),
+    ['roleEx-checkbox-row', 'roleEx-checkbox-row', 'roleEx-checkbox-row', 'roleEx-checkbox-row',
+        'roleEx-checkbox-row', 'roleEx-state-list-fold', 'roleEx-state-tpl-fold']);
 
 // ---- 顶部抽屉：按钮必须绑上自己的点击（酒馆是直接绑定 .drawer-toggle，不会认后插入的抽屉） ----
 const clickListeners = Array.from(listeners.keys()).filter(k => k.endsWith(':click'));
@@ -1002,6 +1071,44 @@ check('直接调用后图标切换为 openIcon', liveIcon?.classList.contains('o
 api.toggleDrawerState();
 check('再次调用收起', sidePanel.classList.contains('closedDrawer'), true);
 check('再次调用图标回到 closedIcon', liveIcon?.classList.contains('closedIcon'), true);
+
+// ---- 面板锁定：跨 F5 / Ctrl+F5 / 重启酒馆仍然锁定（存扩展设置的独立键，不进 settings） ----
+const pinEl = registry.get('roleEx-panel-pin');
+const pinChange = listeners.get('roleEx-panel-pin:change');
+check('锁定控件在面板里、并且绑了 change', !!pinEl && typeof pinChange === 'function', true);
+check('默认不锁定：ui.panelPinned / pinnedOpen / 复选框三处一致',
+    api.ui.panelPinned === false && !sidePanel.classList.contains('pinnedOpen') && pinEl.checked === false, true);
+
+pinEl.checked = true;
+pinChange();
+check('勾选锁定 → 写进独立键 ST-RoleExpansion_ui',
+    extensionSettings['ST-RoleExpansion_ui']?.panelPinned, true);
+check('勾选锁定 → 面板带上 pinnedOpen（酒馆的自动关闭找的是 .openDrawer:not(.pinnedOpen)）',
+    sidePanel.classList.contains('pinnedOpen'), true);
+check('勾选锁定 → 图标带上 drawerPinnedOpen（否则别家抽屉一开，图标会被酒馆重置成关闭态）',
+    liveIcon?.classList.contains('drawerPinnedOpen'), true);
+check('锁定不进 settings（「恢复默认设置」只该动配置，不该顺手解锁）', 'panelPinned' in api.settings, false);
+
+// 模拟「F5 / Ctrl+F5 / 重启酒馆」：DOM 与内存状态都清一遍，再由启动路径读回来
+sidePanel.classList.remove('pinnedOpen');
+liveIcon?.classList.remove('drawerPinnedOpen');
+pinEl.checked = false;
+api.ui.panelPinned = false;
+api.applyPanelPin();
+check('重启后读回锁定：pinnedOpen 类恢复', sidePanel.classList.contains('pinnedOpen'), true);
+check('重启后读回锁定：drawerPinnedOpen 类恢复', liveIcon?.classList.contains('drawerPinnedOpen'), true);
+check('重启后读回锁定：复选框恢复', pinEl.checked, true);
+check('重启后读回锁定：ui.panelPinned 恢复', api.ui.panelPinned, true);
+
+pinEl.checked = false;
+pinChange();
+check('取消锁定 → 四处一起清掉，并落盘为 false',
+    extensionSettings['ST-RoleExpansion_ui']?.panelPinned === false
+    && !sidePanel.classList.contains('pinnedOpen')
+    && !liveIcon?.classList.contains('drawerPinnedOpen')
+    && api.ui.panelPinned === false, true);
+check('启动那处调用不带参数（带参数 = 只认内存值，刷新后不会恢复）',
+    /^\s*applyPanelPin\(\);\s*$/m.test(extensionSrc), true);
 
 // ============================================================================
 // 端到端①：默认走隔离通道 generateRaw
@@ -1237,8 +1344,8 @@ api.settings.stateOnlyKnownNames = true;
 // 「可拆」的可验证部分是：模块清单、启用开关、以及模块不在时框架给的空壳（不抛）。
 // 真正「删目录」的验证在 DEVELOPMENT.md §7 的手工清单里（自测桩里没法删文件）。
 const moduleList = api.modules();
-check('模块清单：推特 / 日记 / 角色状态栏都已加载并启用',
-    moduleList.filter(m => m.installed && m.enabled).map(m => m.id).sort().join(','), 'journal,state,twitter');
+check('模块清单：衣装打扮 / 推特 / 日记 / 角色状态栏都已加载并启用',
+    moduleList.filter(m => m.installed && m.enabled).map(m => m.id).sort().join(','), 'journal,outfit,state,twitter');
 check('模块清单带 installed / enabled / title（拆掉模块时 installed 会变 false）',
     moduleList.every(m => typeof m.installed === 'boolean' && typeof m.enabled === 'boolean' && 'title' in m), true);
 check('settings.modules 是模块启用开关表（默认 {} = 全部启用）',
@@ -1438,8 +1545,8 @@ check('推特：srcdoc 里有四个数字（评论/转发/点赞/浏览）',
     twHtml.includes('💬') && twHtml.includes('🔄') && twHtml.includes('❤️') && twHtml.includes('📊'), true);
 
 // ---- 一级区块默认折叠 / 资料区数字框 / 四个数字可在 UI 里改 ----
-check('三个模块的一级区块都默认折叠',
-    ['roleEx-twitter-section', 'roleEx-journal-section', 'roleEx-state-section']
+check('四个模块的一级区块都默认折叠',
+    ['roleEx-outfit-section', 'roleEx-twitter-section', 'roleEx-journal-section', 'roleEx-state-section']
         .every(id => registry.get(id)?.children?.[1]?.style?.display === 'none'), true);
 check('推特区块的箭头默认是 down（收起态）',
     String(allNodes(registry.get('roleEx-twitter-section'), n => String(n.className).includes('roleEx-chevron'))[0]?.className || '').includes('fa-circle-chevron-down'), true);
@@ -1491,10 +1598,13 @@ const modal = (document.body.children || []).find(node => String(node.className)
 check('点「编辑」弹出编辑弹窗', !!modal, true);
 const statInput = (key) => allNodes(modal, n => n?.dataset?.twitterStat === key)[0];
 const modalTextarea = allNodes(modal, n => String(n.tagName) === 'TEXTAREA')[0];
-check('弹窗里有四个数字输入框（评论 / 转发 / 点赞 / 浏览）',
-    ['reply', 'retweet', 'like', 'view'].filter(key => !!statInput(key)).length, 4);
+check('弹窗里有五个数字输入框（评论 / 转帖 / 喜欢 / 书签 / 浏览）',
+    ['reply', 'retweet', 'like', 'bookmark', 'view'].filter(key => !!statInput(key)).length, 5);
 check('弹窗里数字已按当前值预填（不是空的）',
-    ['reply', 'retweet', 'like', 'view'].every(key => String(statInput(key)?.value || '').trim() !== ''), true);
+    ['reply', 'retweet', 'like', 'bookmark', 'view'].every(key => String(statInput(key)?.value || '').trim() !== ''), true);
+check('弹窗里五个数字框的顺序是 评论 / 转帖 / 喜欢 / 浏览 / 书签（与主页操作行同一序）',
+    allNodes(modal, n => n?.dataset?.twitterStat).map(n => n.dataset.twitterStat).join(','),
+    'reply,retweet,like,view,bookmark');
 if (modalTextarea) {
     statInput('reply').value = '4242';
     statInput('like').value = '999';
@@ -1646,7 +1756,14 @@ await api.toggleTweetAction(twActionId, 'like');
 
 
 // ---- 推文配图：有图渲染成 <img>，没图保持纯文字，文件读不到就不画（不裂图） ----
-const twImageTags = () => (twFrameHtml().match(/class="tweet-image"/g) || []).length;
+// 详情页也会各渲染一份媒体（整份文档里同一张图出现两次），所以按「主页那一段」单独数
+const twHomeHtml = () => {
+    const html = twFrameHtml();
+    const from = html.indexOf('id="tw-home"');
+    const to = html.indexOf('id="tw-detail-wrap"');
+    return from === -1 || to === -1 ? html : html.slice(from, to);
+};
+const twImageTags = () => (twHomeHtml().match(/class="tweet-image"/g) || []).length;
 check('没有配图的推文渲染成纯文字样式（srcdoc 里没有 tweet-image）', twImageTags(), 0);
 
 const twPngBase64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]).toString('base64');
@@ -1719,8 +1836,10 @@ const twPane = twPaneHtml.slice(twPaneHtml.indexOf('class="tweets-container" id=
 const twPaneUntilBody = twPane.slice(0, twPane.indexOf('</body>'));
 check('推特：srcdoc 是固定高度的一屏（html/body 都 overflow: hidden，根视口不滚）',
     /html,\s*body\s*\{\s*height:\s*100%;\s*overflow:\s*hidden;\s*\}/.test(twPaneHtml), true);
-check('推特：body 是 flex 竖排（头 + 列表两段）',
-    /body\s*\{\s*display:\s*flex;\s*flex-direction:\s*column;/.test(twPaneHtml), true);
+check('推特：#tw-home 是 flex 竖排（头 + 列表两段）',
+    /#tw-home\s*\{\s*display:\s*flex;\s*flex-direction:\s*column;\s*height:\s*100%;\s*\}/.test(twPaneHtml), true);
+check('推特：详情容器默认收起（进详情才显示）',
+    /#tw-detail-wrap\s*\{\s*display:\s*none;/.test(twPaneHtml) && twPaneHtml.includes('.tw-detail-page { display: none; }'), true);
 check('推特：资料头 .tw-head 不参与伸缩（固定不动）',
     twPaneHtml.includes('.tw-head { flex: 0 0 auto; }'), true);
 check('推特：唯一的滚动容器是推文列表 #tw-posts',
@@ -1739,30 +1858,210 @@ check('推特：iframe 上不再有 min-height 占位（固定高度了）',
 await api.reloadTwitter();
 check('推特：父页面完全不写 style.height', registry.get('roleEx-twitter-frame')?.style?.height, undefined);
 
-// ---- 切换标签：滚动容器留在原地，只把里面的东西换成一句提示 ----
+// ---- URL 媒体（视频 / 动图 / 静态图）：只存地址、不落角色目录；本地配图与它共存时 URL 优先 ----
+const twRawLines = () => twRaw().trim().split('\n').map(l => JSON.parse(l));
+const twWriteRawLines = (lines) => assetFs.set(twJsonlKey(), lines.map(o => JSON.stringify(o)).join('\n') + '\n');
+const twMediaLines = twRawLines();
+const twMediaTweet = twMediaLines.find(o => o.__roleExpansion === 'twitter');
+twMediaTweet.content = '带视频的推文';
+twMediaTweet.image = '';
+twMediaTweet.mediaUrl = 'http://localhost:8010/m.ashx/root3/demo.mp4';
+delete twMediaTweet.mediaKind;
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('URL 是 .mp4 → 渲染成 <video class="tweet-video">（带 controls、刻意不 autoplay）',
+    twHomeHtml().includes('<video class="tweet-video" src="http://localhost:8010/m.ashx/root3/demo.mp4" controls preload="metadata" playsinline></video>')
+        && twHomeHtml().includes('autoplay') === false, true);
+check('带媒体的卡片带 has-media（「媒体」标签按它过滤）',
+    twHomeHtml().includes('class="tweet has-media"'), true);
+// 主页媒体只做「预览」：宽度 50% → 面积 1/4；选择器带 .tweet 前缀，所以详情页那份不受影响
+const twCssNow = twFrameHtml().split('</style>')[0];
+check('主页卡片里的媒体按 1/4 面积预览（宽度 50%，选择器只命中 .tweet）',
+    twCssNow.includes('.tweet .tweet-image, .tweet .tweet-video { width: 50%; }'), true);
+check('详情页那份媒体不被缩小（.tweet-image 基础规则仍是 max-width: 100%，没有 width: 50%）',
+    /^\.tweet-image \{[^}]*max-width: 100%[^}]*\}$/m.test(twCssNow)
+        && /^\.tweet-image \{[^}]*width: 50%/m.test(twCssNow) === false, true);
+
+twMediaTweet.mediaUrl = 'http://localhost:8010/pic/demo.gif';
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('URL 是 .gif → 渲染成 <img class="tweet-image">（GIF / APNG 一进页面自己就动）',
+    twHomeHtml().includes('<img class="tweet-image" src="http://localhost:8010/pic/demo.gif"'), true);
+check('换成图片后整份文档里不再有 <video>', twFrameHtml().includes('<video'), false);
+
+twMediaTweet.mediaUrl = 'http://localhost:8010/stream/whatever';
+twMediaTweet.mediaKind = 'video';
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('没有后缀的 URL + 手选「视频」→ 也渲染成 <video>', twHomeHtml().includes('<video class="tweet-video"'), true);
+
+twMediaTweet.mediaUrl = 'http://localhost:8010/v/demo.flv';
+delete twMediaTweet.mediaKind;
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('刻意不支持 FLV：.flv 不会被当成视频（浏览器原生播不了）', twFrameHtml().includes('<video'), false);
+
+// 本地配图与 URL 共存 → URL 优先；清掉 URL 自动回到本地那张
+twMediaTweet.image = 'tweet-' + twMediaTweet.id + '.png';
+assetFs.set('twitter|' + twMediaTweet.image, twPngBase64);
+twMediaTweet.mediaUrl = 'http://localhost:8010/m.ashx/root3/demo.mp4';
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('本地配图与 URL 都在时 URL 优先（不画本地那张 data URL）',
+    twHomeHtml().includes('<video class="tweet-video"') && twHomeHtml().includes('data:image/png;base64') === false, true);
+twMediaTweet.mediaUrl = '';
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('清掉 URL 之后自动回到本地配图', twHomeHtml().includes('data:image/png;base64'), true);
+
+twMediaTweet.mediaUrl = 'javascript:alert(1)';
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+check('URL 只认 http(s)：写花了既不渲染、也不会漏进 srcdoc',
+    twFrameHtml().includes('javascript:') === false && twFrameHtml().includes('<video'), false);
+twMediaTweet.mediaUrl = '';
+twMediaTweet.image = '';
+twWriteRawLines(twMediaLines);
+await api.reloadTwitter();
+
+// ---- 详情页：每条推文预渲染一份（默认隐藏），数值行 / 操作栏照样例 ----
+const twDetailPages = () => (twFrameHtml().match(/class="tw-detail-page"/g) || []).length;
+const twDetailBar = () => {
+    const html = twFrameHtml();
+    const start = html.indexOf('class="tweet-action-bar"');
+    return start === -1 ? '' : html.slice(start, html.indexOf('</div>', start));
+};
+const twHomeActions = () => {
+    const html = twHomeHtml();
+    const start = html.indexOf('class="tweet-actions"');
+    return start === -1 ? '' : html.slice(start, html.indexOf('</div>', start));
+};
+check('每条推文都预渲染了一份详情页（点击只切 display，不重建 srcdoc）', twDetailPages(), twTweets().length);
+check('详情页里有左上角返回键', (twFrameHtml().match(/class="tw-back-btn"/g) || []).length, twTweets().length);
+check('详情页的数值行是「a 评论 b 转帖 c 喜欢 d 书签」四项',
+    ['reply', 'retweet', 'like', 'bookmark'].every(key => twFrameHtml().includes('data-stat="' + key + '"'))
+        && twFrameHtml().includes('</strong> 评论') && twFrameHtml().includes('</strong> 转帖')
+        && twFrameHtml().includes('</strong> 喜欢') && twFrameHtml().includes('</strong> 书签'), true);
+check('详情页把浏览数放在时间行（<浏览> 查看），不放在数值行',
+    /<strong>[0-9.,KkMm]+<\/strong> 查看/.test(twFrameHtml()), true);
+check('详情页操作栏只有图标、没有数字', /\d/.test(twDetailBar()), false);
+check('详情页操作栏是 💬 🔄 ❤️ 🔖 🔗 五个控件',
+    ['💬', '🔄', '❤️', '🔖', '🔗'].every(icon => twDetailBar().includes(icon)), true);
+check('主页操作行也有 🔖 与 🔗（与评论 / 转发 / 点赞同排）',
+    twHomeActions().includes('>🔖</span>') && twHomeActions().includes('>🔗</span>'), true);
+const twHomeActionOrder = ['💬', '🔄', '❤️', '📊', '🔖', '🔗'].map(icon => twHomeActions().indexOf(icon));
+check('主页操作行的顺序是 💬 🔄 ❤️ 📊 🔖 🔗（🔖 与 📊 已互换）',
+    twHomeActionOrder.every((at, i) => at !== -1 && (i === 0 || twHomeActionOrder[i - 1] < at)), true);
+const twDetailActionOrder = ['💬', '🔄', '❤️', '🔖', '🔗'].map(icon => twDetailBar().indexOf(icon));
+check('详情页操作栏的顺序是 💬 🔄 ❤️ 🔖 🔗（浏览数在时间行，不在这行）',
+    twDetailActionOrder.every((at, i) => at !== -1 && (i === 0 || twDetailActionOrder[i - 1] < at)), true);
+check('主页的 🔖 只有图标、不带数字（书签数只在详情页数值行里出现）',
+    twHomeActions().includes('>🔖</span>'), true);
+check('详情页用的是同一份正文（.tweet-content-lg 的数量 = 推文数）',
+    (twFrameHtml().match(/class="tweet-content-lg"/g) || []).length, twTweets().length);
+check('详情页显示的就是那条推文的正文',
+    (twFrameHtml().match(/class="tweet-content-lg">带视频的推文</g) || []).length, 1);
+
+// ---- 切换标签 / 点进详情 / 返回 / 视频互斥：把 contentDocument 换成一个够用的假 DOM ----
 const twFrameEl = registry.get('roleEx-twitter-frame');
 const twPostsEl = makeEl('div');
 const twEmptyEl = makeEl('div');
-const twNavButtons = ['posts', 'replies', 'likes'].map((tab) => {
+const twHomeEl = makeEl('div');
+twHomeEl.setAttribute('id', 'tw-home');
+const twDetailWrapEl = makeEl('div');
+twDetailWrapEl.setAttribute('id', 'tw-detail-wrap');
+const twNavButtons = ['posts', 'replies', 'media', 'likes'].map((tab) => {
     const btn = makeEl('button');
     btn.setAttribute('data-tab', tab);
     return btn;
 });
+// 两条假推文：A 带媒体（has-media），B 没有
+const twCardA = makeEl('div');
+// 桩的 classList 是独立的 Set：必须用 classList.add（直接写 className 它读不到）
+twCardA.classList.add('tweet', 'has-media');
+twCardA.setAttribute('data-id', 'tw-a');
+const twCardB = makeEl('div');
+twCardB.classList.add('tweet');
+twCardB.setAttribute('data-id', 'tw-b');
+const twPageA = makeEl('div');
+twPageA.classList.add('tw-detail-page');
+twPageA.setAttribute('data-id', 'tw-a');
+const twPageB = makeEl('div');
+twPageB.classList.add('tw-detail-page');
+twPageB.setAttribute('data-id', 'tw-b');
+const twBackBtn = makeEl('button');
+twBackBtn.classList.add('tw-back-btn');
+const twVideoA = makeEl('video');
+twVideoA.setAttribute('id', 'tw-v-a');
+const twVideoB = makeEl('video');
+twVideoB.setAttribute('id', 'tw-v-b');
+let twPausedA = false;
+let twPausedB = false;
+twVideoA.pause = () => { twPausedA = true; };
+twVideoB.pause = () => { twPausedB = true; };
+const twDocById = { 'tw-posts': twPostsEl, 'tw-empty': twEmptyEl, 'tw-home': twHomeEl, 'tw-detail-wrap': twDetailWrapEl };
 twFrameEl.contentDocument = {
     body: {},
     documentElement: {},
-    getElementById: (id) => (id === 'tw-posts' ? twPostsEl : (id === 'tw-empty' ? twEmptyEl : null)),
-    querySelectorAll: (sel) => (sel === '.nav-tab' ? twNavButtons : []),
+    getElementById: (id) => twDocById[id] || null,
+    querySelectorAll: (sel) => {
+        if (sel === '.nav-tab') return twNavButtons;
+        if (sel === '.tweet') return [twCardA, twCardB];
+        if (sel === '.tw-detail-page') return [twPageA, twPageB];
+        if (sel === '.tw-back-btn') return [twBackBtn];
+        if (sel === 'video') return [twVideoA, twVideoB];
+        return [];
+    },
+    querySelector: (sel) => {
+        const m = /^\.tw-detail-page\[data-id="(.+)"\]$/.exec(String(sel));
+        if (!m) return null;
+        return [twPageA, twPageB].find(page => page.getAttribute('data-id') === m[1]) || null;
+    },
 };
 const twFrameLoad = listeners.get('roleEx-twitter-frame:load');
 check('推特：iframe 的 load 事件接了线（和浏览器里同一条路径）', typeof twFrameLoad, 'function');
 twFrameLoad();
 check('推特：load 之后不会去量高度（没有任何 style.height 写入）', twFrameEl.style.height, undefined);
+
+// 点推文框 → 整个 iframe 切到那一条的详情页
+twCardB.click();
+check('点推文框 → 整个 iframe 进详情（主页藏起来、详情容器显示）',
+    twHomeEl.style.display === 'none' && twDetailWrapEl.style.display === 'block', true);
+check('显示的是被点那条的详情页（另一条保持隐藏）',
+    twPageB.style.display === 'block' && twPageA.style.display !== 'block', true);
+check('进详情时把文档里的视频都停掉（主页那段声音不跟着走）', twPausedA && twPausedB, true);
+twPausedA = false;
+twPausedB = false;
+twBackBtn.click();
+check('点返回键 → 回主页（详情容器收起、那份详情页也收起）',
+    twHomeEl.style.display === 'flex' && twDetailWrapEl.style.display === 'none' && twPageB.style.display === 'none', true);
+check('返回时同样把视频停掉（详情页那份不会在后面继续出声）', twPausedA && twPausedB, true);
+twPausedA = false;
+twPausedB = false;
+
+// 点控件区不能跳详情（想点赞却把页面换走 = 体验事故）
+const twActionsChild = makeEl('span');
+twActionsChild.closest = (sel) => (sel === '.tweet-actions' ? {} : null);
+(clickHandlers.get(twCardA) || []).forEach(fn => fn({ target: twActionsChild, stopPropagation() { } }));
+check('点卡片里的控件区不跳详情（控件是控件、框是框）',
+    twHomeEl.style.display === 'flex' && twDetailWrapEl.style.display === 'none', true);
+
+// 视频互斥：播一个就把别的暂停
+listeners.get('tw-v-a:play')();
+check('播视频 A → 视频 B 自动暂停（同一条时间线只留一个在播）', twPausedB, true);
+
+// 「媒体」标签是真过滤；「回复 / 喜欢」还没有数据源，只加一句提示
 twNavButtons[2].click();
-check('切到非「帖子」标签 → 滚动容器加 is-empty（里面的卡片靠 CSS 藏起来）',
-    twPostsEl.classList.contains('is-empty'), true);
-check('切到非「帖子」标签 → 提示显示在列表区且文案对得上标签名',
-    twEmptyEl.style.display === 'block' && twEmptyEl.textContent.includes('「喜欢」'), true);
+check('「媒体」标签只留带媒体的推文', twCardA.style.display === '' && twCardB.style.display === 'none', true);
+check('「媒体」标签下有内容时不显示空态提示', twEmptyEl.style.display, 'none');
+twNavButtons[0].click();
+check('切回「帖子」→ 卡片都回来、is-empty 撤掉、提示收掉',
+    twCardA.style.display === '' && twCardB.style.display === ''
+        && twPostsEl.classList.contains('is-empty') === false && twEmptyEl.style.display === 'none', true);
+twNavButtons[3].click();
+check('切到「喜欢」（还没有数据源）→ 滚动容器加 is-empty 且提示文案对得上标签名',
+    twPostsEl.classList.contains('is-empty') === true && twEmptyEl.style.display === 'block'
+        && twEmptyEl.textContent.includes('「喜欢」'), true);
 check('推特：滚动容器本身不能被藏（藏了就没得滚了）', twPostsEl.style.display, undefined);
 twNavButtons[0].click();
 check('切回「帖子」→ is-empty 撤掉、提示隐藏',
@@ -1786,6 +2085,574 @@ check('推特：模块源码里没有自己拼 fetch（走框架的资源通道�
 check('推特：「还没选角色」不当错误显示（状态留空，不打红字）',
     twModuleSrc.includes("const quiet = rt.state.reason === 'no-character';"), true);
 
+
+
+
+// ============================================================================
+// 衣装打扮模块（modules/outfit/**）：面板结构 / 交互 / 落盘 / 预设注入 / 降级 / 桥接
+//
+// ⚠️ 两处 stub 行为决定了下面的写法，别按浏览器直觉改：
+//   1) makeEl 的 textContent 只是普通字段，赋 '' 并不会清掉 children。所以「本次渲染
+//      新追加了哪些节点」= 追加前先记 length、再 slice（见 ofNew）；不要用总数断言。
+//   2) makeEl 的 classList 与 className 是**两套互不同步**的状态：框架 el() 走 className
+//      （渲染期就带的类，如 is-on / is-empty / roleEx-hint），模块点击时走 classList
+//      （运行时切换的类，如 cols 的 is-disabled）。按被验证的那条路径选断言。
+// ============================================================================
+const ofTick = (ms = 30) => new Promise(r => setTimeout(r, ms));
+const ofNew = (parent, before) => (parent?.children || []).slice(before);
+const ofLen = (parent) => (parent?.children || []).length;
+const ofClass = (node) => String(node?.className || '');
+const ofHasClass = (node, cls) => ofClass(node).split(/\s+/).includes(cls) || node?.classList?.contains(cls) === true;
+const ofPreviewRows = (nodes) => nodes.filter(n => ofClass(n).includes('roleEx-outfit-preview-row'));
+
+const ofSectionEl = registry.get('roleEx-outfit-section');
+const ofBodyEl = ofSectionEl?.children?.[1];
+const ofPreviewBox = registry.get('roleEx-outfit-preview-list');
+const ofEditorBox = registry.get('roleEx-outfit-editor');
+const ofColsEl = registry.get('roleEx-outfit-cols');
+const ofStatusEl = registry.get('roleEx-outfit-status');
+const ofJsonlKey = () => [...assetFs.keys()].find(k => k.startsWith('outfit|RoleExpansion_outfit_') && k.endsWith('.jsonl'));
+const ofJsonl = () => { const k = ofJsonlKey(); return k ? assetFs.get(k) : ''; };
+const ofLines = () => ofJsonl().trim().split('\n').map(l => { try { return JSON.parse(l); } catch (e) { return null; } });
+const ofLine = (kind) => ofLines().find(o => o && o.__roleExpansion === kind) || {};
+
+// ---- 1. 面板结构（DOM 契约）----
+check('面板第 1 块就是衣装打扮（模块清单第一条）', String(ofSectionEl?.id), 'roleEx-outfit-section');
+check('衣装打扮区块横跨整行（清单首块带 roleEx-span-all）', ofSectionEl?.classList?.contains('roleEx-span-all'), true);
+check('区块标题是「衣装打扮」', ofSectionEl?.children?.[0]?.children?.[1]?.textContent, '衣装打扮');
+check('正文（children[1]）的直接子节点顺序 = 状态行 → 两栏 → 注入模板折叠块',
+    (ofBodyEl?.children || []).map(c => String(c.id)),
+    ['roleEx-outfit-status', 'roleEx-outfit-cols', 'roleEx-outfit-inject-fold']);
+
+// 固定住「这一次渲染」的节点（模块每画一次都是往同一个父节点后面追加）
+const ofP0 = ofLen(ofPreviewBox);
+const ofE0 = ofLen(ofEditorBox);
+await api.reloadOutfit();
+const ofP0New = ofNew(ofPreviewBox, ofP0);
+const ofE0New = ofNew(ofEditorBox, ofE0);
+const ofFixedRows = ofE0New.flatMap(g => (g?.children || []).filter(c => String(c.id).startsWith('roleEx-outfit-cat-')));
+check('编辑器按 外 / 内 / 其他 分三组（PARTS 顺序即渲染顺序）',
+    ofE0New.map(g => g?.children?.[0]?.textContent).join(','), '外,内,其他');
+check('每组的分类行数 = 外 5 / 内 2 / 其他 1（其他组此时只有新建按钮）',
+    ofE0New.map(g => ofLen(g) - 1).join(','), '5,2,1');
+check('7 个固定分类行 id 齐全且顺序固定',
+    ofFixedRows.map(r => String(r.id)).join(','),
+    ['hat', 'top', 'bottom', 'socks', 'shoes', 'underwear', 'underpants'].map(k => 'roleEx-outfit-cat-' + k).join(','));
+check('固定分类行上没有改名 / 删除按钮（只有自定义分类才有）',
+    ofFixedRows.every(r => (r.children || []).every(c => !/^roleEx-outfit-(rename|del)-/.test(String(c.id)))), true);
+check('每行都有 input#roleEx-outfit-tags-<key> 与 div#roleEx-outfit-chips-<key>.roleEx-outfit-chips',
+    ofFixedRows.every(r => {
+        const key = String(r.id).replace('roleEx-outfit-cat-', '');
+        const input = (r.children || []).find(c => c.id === 'roleEx-outfit-tags-' + key);
+        const chips = (r.children || []).find(c => c.id === 'roleEx-outfit-chips-' + key);
+        return !!input && input.tagName === 'INPUT' && !!chips && ofClass(chips).includes('roleEx-outfit-chips');
+    }), true);
+check('「其他」组的最后一个是 #roleEx-outfit-add-cat（新建分类）',
+    String(ofE0New[2]?.children?.[ofLen(ofE0New[2]) - 1]?.id), 'roleEx-outfit-add-cat');
+
+const ofRows0 = ofPreviewRows(ofP0New);
+check('预览每个分类一行（7 个固定分类 = 7 行）', ofRows0.length, 7);
+check('预览行 = span.roleEx-outfit-preview-name（文本以「：」结尾）+ span.roleEx-outfit-preview-value',
+    ofRows0.every(r => ofClass(r.children?.[0]).includes('roleEx-outfit-preview-name')
+        && ofClass(r.children?.[1]).includes('roleEx-outfit-preview-value')
+        && String(r.children?.[0]?.textContent).endsWith('：')), true);
+check('未选时 is-empty 加在 value 上（不是加在 row 上）、文本是「未选」',
+    ofRows0.every(r => ofHasClass(r.children?.[1], 'is-empty') && r.children?.[1]?.textContent === '未选')
+    && ofRows0.every(r => ofHasClass(r, 'is-empty') === false), true);
+check('两栏：#roleEx-outfit-preview（内含 #roleEx-outfit-preview-list）与 #roleEx-outfit-editor',
+    ofClass(ofColsEl).includes('roleEx-outfit-cols')
+    && ofColsEl?.children?.[0] === registry.get('roleEx-outfit-preview')
+    && ofColsEl?.children?.[1] === registry.get('roleEx-outfit-editor')
+    && registry.get('roleEx-outfit-preview')?.children?.includes(ofPreviewBox) === true, true);
+
+const ofInjectFold = registry.get('roleEx-outfit-inject-fold');
+const ofInjectPrompt = registry.get('roleEx-outfit-inject-prompt');
+check('注入模板折叠块默认收起（body 显式 display:none）', ofInjectFold?.children?.[1]?.style?.display, 'none');
+check('折叠块里是注入模板文本域（值 = settings.outfitInjectPrompt）',
+    ofInjectPrompt?.tagName === 'TEXTAREA' && ofInjectPrompt?.value === api.settings.outfitInjectPrompt, true);
+check('状态行给出落点（含 _RoleExpansion/outfit/）',
+    String(ofStatusEl?.textContent || '').includes('_RoleExpansion/outfit/'), true);
+check('设置：outfitInjectPrompt 由模块 defaults 并进框架设置（键在 settings 上、含 {{outfitList}}）',
+    'outfitInjectPrompt' in api.settings
+    && typeof api.settings.outfitInjectPrompt === 'string'
+    && api.settings.outfitInjectPrompt.includes('{{outfitList}}'), true);
+
+// ---- 2. 交互（真实 DOM 事件 + 假资源桩）----
+const ofSavedPrompt = globalThis.prompt;
+const ofSavedConfirm = globalThis.confirm;
+
+// 备选表整表替换：输入里有重复项 → 去重
+registry.get('roleEx-outfit-tags-top').value = '白衬衫,大衣,白衬衫';
+listeners.get('roleEx-outfit-tags-top:change')();
+await ofTick();
+check('落盘 key = outfit|<文件名>（RoleExpansion_outfit_c_<8位>_j_<8位>.jsonl）',
+    /^outfit\|RoleExpansion_outfit_c_[0-9a-f]{8}_j_[0-9a-f]{8}\.jsonl$/.test(ofJsonlKey() || ''), true);
+const ofChipsTop = registry.get('roleEx-outfit-chips-top');
+check('备选表去重：输入 3 个（含重复）→ 恰好 2 个芯片', ofLen(ofChipsTop), 2);
+check('芯片的 class 是 .roleEx-outfit-chip',
+    (ofChipsTop?.children || []).every(c => ofClass(c).includes('roleEx-outfit-chip')), true);
+check('jsonl 里的备选表同样去重（白衬衫,大衣）',
+    JSON.stringify(ofLine('outfit-catalog').categories?.find(c => c.key === 'top')?.tags),
+    JSON.stringify(['白衬衫', '大衣']));
+const ofFileName = String(ofJsonlKey()).split('|')[1];
+check('状态行与路径文案都指向 chats/<角色>/_RoleExpansion/outfit/<文件名>',
+    String(ofStatusEl?.textContent || '').includes('chats/测试角色/_RoleExpansion/outfit/' + ofFileName)
+    && String(api.assetPathText('outfit', ofFileName)).includes('_RoleExpansion/outfit/'), true);
+
+const ofCoatChip = (ofChipsTop?.children || []).find(c => c.textContent === '大衣');
+const ofPPick = ofLen(ofPreviewBox);
+ofCoatChip?.click();
+await ofTick();
+check('点「大衣」芯片 → 该芯片带 is-on', ofCoatChip?.classList?.contains('is-on'), true);
+const ofPickRow = ofPreviewRows(ofNew(ofPreviewBox, ofPPick)).find(r => r.children?.[0]?.textContent === '上衣：');
+check('预览里出现「上衣：大衣」（且不再是 is-empty）',
+    ofPickRow?.children?.[1]?.textContent === '大衣' && ofHasClass(ofPickRow?.children?.[1], 'is-empty') === false, true);
+check('状态行的已选计数跟着变（已选 1 项）',
+    String(ofStatusEl?.textContent || '').includes('已选 1 项'), true);
+const ofPUnpick = ofLen(ofPreviewBox);
+ofCoatChip?.click();
+await ofTick();
+check('再点一次 → is-on 撤掉', ofCoatChip?.classList?.contains('is-on'), false);
+check('取消选择后预览回到「未选」',
+    ofPreviewRows(ofNew(ofPreviewBox, ofPUnpick)).find(r => r.children?.[0]?.textContent === '上衣：')?.children?.[1]?.textContent, '未选');
+
+// 新建分类：globalThis.prompt 返回「武器」
+const ofEAdd = ofLen(ofEditorBox);
+globalThis.prompt = () => '武器';
+registry.get('roleEx-outfit-add-cat')?.click();
+await ofTick();
+const ofAddGroups = ofNew(ofEditorBox, ofEAdd);
+const ofCustomRow = (ofAddGroups[2]?.children || []).find(c => String(c.id).startsWith('roleEx-outfit-cat-custom-'));
+const ofCustomKey = String(ofCustomRow?.id).replace('roleEx-outfit-cat-', '');
+check('新建分类（武器）：catalog 多出一个自定义分类行', !!ofCustomRow, true);
+check('新分类行显示的名字是「武器」', ofCustomRow?.children?.[0]?.textContent, '武器');
+check('自定义分类行有改名 / 删除按钮，两者的 class 都是 roleEx-outfit-cat-btn',
+    (ofCustomRow?.children || []).some(c => c.id === 'roleEx-outfit-rename-' + ofCustomKey && ofClass(c).includes('roleEx-outfit-cat-btn'))
+    && (ofCustomRow?.children || []).some(c => c.id === 'roleEx-outfit-del-' + ofCustomKey && ofClass(c).includes('roleEx-outfit-cat-btn')), true);
+check('新分类落在「其他」部分并已落盘（part: other / custom: true）',
+    ofLine('outfit-catalog').categories?.some(c => c.key === ofCustomKey && c.name === '武器' && c.part === 'other' && c.custom === true), true);
+
+// 重名：不新增分类、不落盘、弹 error toast
+toasts.length = 0;
+const ofRawBeforeDup = ofJsonl();
+const ofECountBeforeDup = ofLen(ofEditorBox);
+globalThis.prompt = () => '上衣';
+registry.get('roleEx-outfit-add-cat')?.click();
+await ofTick();
+check('重名（上衣）不新增分类（自定义分类仍只有 1 个）',
+    (ofLine('outfit-catalog').categories || []).filter(c => c.custom === true).length, 1);
+check('重名时不落盘（文件一字未改、也没有重画编辑器）',
+    ofJsonl() === ofRawBeforeDup && ofLen(ofEditorBox) === ofECountBeforeDup, true);
+check('重名时弹了 error toast',
+    toasts.some(t => t.kind === 'error' && String(t.message).includes('已有同名分类')), true);
+
+// 重命名
+const ofERename = ofLen(ofEditorBox);
+globalThis.prompt = () => '护甲';
+registry.get('roleEx-outfit-rename-' + ofCustomKey)?.click();
+await ofTick();
+const ofRenamedRow = (ofNew(ofEditorBox, ofERename)[2]?.children || []).find(c => c.id === 'roleEx-outfit-cat-' + ofCustomKey);
+check('重命名：行标题变成「护甲」', ofRenamedRow?.children?.[0]?.textContent, '护甲');
+check('重命名已落盘（key 不变、name 变）',
+    ofLine('outfit-catalog').categories?.find(c => c.key === ofCustomKey)?.name, '护甲');
+
+// 自定义分类的备选表 + 已选 tag（删除前先让两者都非空）
+registry.get('roleEx-outfit-tags-' + ofCustomKey).value = '长剑';
+listeners.get('roleEx-outfit-tags-' + ofCustomKey + ':change')();
+await ofTick();
+const ofSwordChip = registry.get('roleEx-outfit-chips-' + ofCustomKey)?.children?.[0];
+check('自定义分类的备选表走同一套芯片（长剑）', ofSwordChip?.textContent, '长剑');
+const ofPSword = ofLen(ofPreviewBox);
+ofSwordChip?.click();
+await ofTick();
+check('自定义分类的 tag 也能选中（预览「护甲：长剑」）',
+    ofPreviewRows(ofNew(ofPreviewBox, ofPSword)).find(r => r.children?.[0]?.textContent === '护甲：')?.children?.[1]?.textContent, '长剑');
+check('已选 tag 落盘（picked 里出现这个自定义 key）',
+    JSON.stringify(ofLine('outfit-selection').picked?.[ofCustomKey]), JSON.stringify(['长剑']));
+
+// 删除
+toasts.length = 0;
+globalThis.confirm = () => true;
+const ofEDel = ofLen(ofEditorBox);
+const ofPDel = ofLen(ofPreviewBox);
+registry.get('roleEx-outfit-del-' + ofCustomKey)?.click();
+await ofTick();
+const ofDelGroups = ofNew(ofEditorBox, ofEDel);
+check('删除后分类行不存在（本次渲染里没有它）',
+    ofDelGroups.every(g => (g.children || []).every(c => c.id !== 'roleEx-outfit-cat-' + ofCustomKey)), true);
+check('删除后改名 / 删除按钮也不存在',
+    ofDelGroups.every(g => (g.children || []).every(c => c.id !== 'roleEx-outfit-rename-' + ofCustomKey
+        && c.id !== 'roleEx-outfit-del-' + ofCustomKey)), true);
+check('删除后该分类的备选 tag 与已选 tag 都不再存在（catalog / picked 里都没有这个 key）',
+    (ofLine('outfit-catalog').categories || []).every(c => c.key !== ofCustomKey)
+    && (ofCustomKey in (ofLine('outfit-selection').picked || {})) === false, true);
+check('删除后预览里也没有它',
+    ofPreviewRows(ofNew(ofPreviewBox, ofPDel)).some(r => r.children?.[0]?.textContent === '护甲：'), false);
+check('「其他」组里只剩组标题 + 新建按钮',
+    ofLen(ofDelGroups[2]) === 2 && String(ofDelGroups[2]?.children?.[1]?.id) === 'roleEx-outfit-add-cat', true);
+globalThis.prompt = ofSavedPrompt;
+globalThis.confirm = ofSavedConfirm;
+
+// ---- 3. 落盘（jsonl 三行结构）----
+check('jsonl 三行结构：会话头 / 分类表 / 选择表',
+    ofJsonl().trim().split('\n').map(l => JSON.parse(l).__roleExpansion).join(','),
+    'outfit-session,outfit-catalog,outfit-selection');
+check('分类表里 7 个固定分类齐全，part 分别是 outer / inner',
+    (ofLine('outfit-catalog').categories || []).filter(c => c.custom !== true).map(c => c.key + ':' + c.part).join(','),
+    'hat:outer,top:outer,bottom:outer,socks:outer,shoes:outer,underwear:inner,underpants:inner');
+check('选择表的 picked 覆盖所有分类 key（未选的是空数组）',
+    JSON.stringify(Object.keys(ofLine('outfit-selection').picked || {}).sort()),
+    JSON.stringify((ofLine('outfit-catalog').categories || []).map(c => c.key).sort()));
+
+// 手改 jsonl：垃圾行 + 未知分类 key + 未知 part + picked 里不存在的 tag + 缺一个固定分类
+const ofBroken = ofJsonl().trim().split('\n').map(l => JSON.parse(l));
+const ofBrokenCat = ofBroken.find(o => o.__roleExpansion === 'outfit-catalog');
+ofBrokenCat.categories = ofBrokenCat.categories.filter(c => c.key !== 'shoes');
+ofBrokenCat.categories.push({ key: 'not-a-custom-key', part: 'outer', name: '外星分类', custom: false, tags: ['x'] });
+ofBrokenCat.categories.push({ key: 'custom-weird-part', part: '不存在的部分', name: '怪部分', custom: true, tags: ['y'] });
+const ofBrokenSel = ofBroken.find(o => o.__roleExpansion === 'outfit-selection');
+ofBrokenSel.picked.hat = ['不存在的外套'];
+ofBrokenSel.picked.top = ['白衬衫', '不在备选表里的 tag'];
+const ofEBroken = ofLen(ofEditorBox);
+const ofPBroken = ofLen(ofPreviewBox);
+assetFs.set(ofJsonlKey(), '{这不是合法 JSON 的一行\n'
+    + ofBroken.map(o => JSON.stringify(o)).join('\n')
+    + '\n{"__roleExpansion":"完全不认识的行"}\n');
+const ofBrokenRes = await api.reloadOutfit();
+const ofBrokenGroups = ofNew(ofEditorBox, ofEBroken);
+const ofBrokenRows = ofPreviewRows(ofNew(ofPreviewBox, ofPBroken));
+check('手改 jsonl：垃圾行被计数（1 行非法 JSON + 1 行未知类型）', ofBrokenRes?.skipped, 2);
+check('垃圾行计数进了状态行（已跳过 2 行）',
+    String(ofStatusEl?.textContent || '').includes('已跳过 2 行'), true);
+check('归一化：缺的固定分类按内置补齐（shoes 行仍在）',
+    ofBrokenGroups.flatMap(g => g.children).some(c => c.id === 'roleEx-outfit-cat-shoes'), true);
+check('归一化：未知的分类 key 被丢掉（既不是固定分类、也没有 custom- 前缀）',
+    ofBrokenGroups.flatMap(g => g.children).some(c => String(c.id).includes('not-a-custom-key')), false);
+check('归一化：未知 part 的自定义分类被丢掉',
+    ofBrokenGroups.flatMap(g => g.children).some(c => String(c.id).includes('weird-part')), false);
+check('归一化：不在备选表里的已选 tag 被丢掉（头饰仍是「未选」）',
+    ofBrokenRows.find(r => r.children?.[0]?.textContent === '头饰：')?.children?.[1]?.textContent, '未选');
+check('归一化：备选表里确实存在的那个保留（上衣：白衬衫）',
+    ofBrokenRows.find(r => r.children?.[0]?.textContent === '上衣：')?.children?.[1]?.textContent, '白衬衫');
+check('归一化后只剩 7 个固定分类（没有任何自定义残留）',
+    ofBrokenGroups.flatMap(g => g.children).filter(c => String(c.id).startsWith('roleEx-outfit-cat-')).length, 7);
+
+// ---- 4. 预设注入（marker 卡片）----
+check('注册运行时正文源：走框架桥接壳 ensureOutfitRuntimeSource() 并返回 true',
+    api.ensureOutfitRuntimeSource(), true);
+check('运行时源已登记到 ST 侧（identifier = roleExpansionOutfit）',
+    runtimeSources.has('roleExpansionOutfit'), true);
+check('注册 options = { name: 角色扩展（衣装）, edit: true, toggle: true }（补丁据此放开铅笔 + 开关）',
+    JSON.stringify(runtimeSourceOptions.get('roleExpansionOutfit')),
+    JSON.stringify({ name: '角色扩展（衣装）', edit: true, toggle: true }));
+const ofSource = () => runtimeSources.get('roleExpansionOutfit')();
+const ofDummyOrder = promptManager.getPromptOrderForCharacter({ id: DUMMY_ID });
+check('闸①：卡片不在任何 prompt_order 块 → 不注入（空串）', ofSource(), '');
+ofDummyOrder.push({ identifier: 'roleExpansionOutfit', enabled: false });
+check('闸②：卡片 enabled === false → 不注入（空串）', ofSource(), '');
+// 清空备选表（已选 tag 会一起清掉）→ 一个选中项都没有
+registry.get('roleEx-outfit-tags-top').value = '';
+listeners.get('roleEx-outfit-tags-top:change')();
+await ofTick();
+check('清空备选表后已选 tag 一起清掉（选择表里没有任何残留）',
+    Object.keys(ofLine('outfit-selection').picked || {}).length === 7
+    && Object.values(ofLine('outfit-selection').picked || {}).every(list => list.length === 0), true);
+ofDummyOrder.find(e => e.identifier === 'roleExpansionOutfit').enabled = true;
+check('闸③：卡片启用但一个 tag 都没选 → 不注入（空串）', ofSource(), '');
+// 选一个 tag → 渲染注入模板
+registry.get('roleEx-outfit-tags-shoes').value = '短靴';
+listeners.get('roleEx-outfit-tags-shoes:change')();
+await ofTick();
+registry.get('roleEx-outfit-chips-shoes')?.children?.[0]?.click();
+await ofTick();
+const ofInjected = ofSource();
+check('闸④：有选中 → 渲染注入模板（{{outfitList}} 被换成「外：鞋子=短靴」）',
+    ofInjected.includes('外：鞋子=短靴') && ofInjected.includes('{{outfitList}}') === false, true);
+check('模板里的 {{char}} 走框架的 renderTemplateString（替换成角色名）',
+    ofInjected.includes('{{char}}') === false && ofInjected.includes('角色'), true);
+check('注入正文与 settings.outfitInjectPrompt 同源（首行保留、只换变量）',
+    ofInjected.startsWith(api.settings.outfitInjectPrompt.split('\n')[0].replace('{{char}}', '角色')), true);
+// 注入模板文本域本身可编辑：input → 防抖 400ms → 落进 settings（真浏览器里就是这条路）
+const ofPromptBackup = api.settings.outfitInjectPrompt;
+registry.get('roleEx-outfit-inject-prompt').value = '【衣装】\n{{outfitList}}';
+listeners.get('roleEx-outfit-inject-prompt:input')();
+await ofTick(500);
+check('注入模板可编辑：输入经 400ms 防抖后写进 settings.outfitInjectPrompt',
+    api.settings.outfitInjectPrompt, '【衣装】\n{{outfitList}}');
+api.settings.outfitInjectPrompt = ofPromptBackup;
+const ofDummyIdx = ofDummyOrder.findIndex(e => e.identifier === 'roleExpansionOutfit');
+if (ofDummyIdx !== -1) {
+    ofDummyOrder.splice(ofDummyIdx, 1);
+}
+
+// ---- 5. 框架桥接（index.js 的 5 个壳都要真的解析到模块）----
+const ofBridgeNames = ['renderOutfit', 'reloadOutfit', 'updateOutfitPresetCardHint', 'ensureOutfitRuntimeSource', 'adoptOutfitCardStateFromPreset'];
+check('框架桥接：5 个壳在调试对象上都是 function', ofBridgeNames.every(k => typeof api[k] === 'function'), true);
+check('框架桥接：5 个键都在 roleExpansion 调试对象里', ofBridgeNames.every(k => k in api), true);
+check('桥接都是一行 callOutfit(\'<同名函数>\', …) 转发壳（不是空壳）',
+    ofBridgeNames.every(fn => extensionSrc.includes(`callOutfit('${fn}'`)), true);
+const ofReloadRes = await api.reloadOutfit();
+check('reloadOutfit() 返回模块的结果对象（模块不在时空壳只返回 undefined）',
+    !!ofReloadRes && typeof ofReloadRes === 'object' && 'ok' in ofReloadRes, true);
+ofStatusEl.textContent = '被清空';
+api.renderOutfit();
+check('renderOutfit() 真的重画了状态行（壳不是空操作）', String(ofStatusEl?.textContent || '') !== '被清空', true);
+
+// ---- 6. 扩展设置面板里模块自己那一块 ----
+// 分工是：模板只给一个空容器，内容由模块的 settingsBlock() 自建。
+check('扩展设置面板的容器由模板提供（模块没装时它就是空的）',
+    templateHtml.includes('id="roleEx-setting-module-blocks"'), true);
+check('模板里没有硬编码衣装那块的两个 id（是模块自建，不是框架写死的）',
+    templateHtml.includes('roleEx-preset-card-hint-outfit') === false
+    && templateHtml.includes('roleEx-setting-open-preset-outfit') === false, true);
+
+// 建起框架真实模板里的骨架，然后让框架自己跑一遍 —— **没有任何手动 append / shim**：
+// renderModuleSettingsBlocks() 现在按「api 优先、描述符回落」取 settingsBlock，框架应当自己把两块挂好。
+const ofSettingsContainer = makeEl('div');
+ofSettingsContainer.setAttribute('id', 'extensions_settings');
+const ofSettingsRoot = makeEl('div');
+ofSettingsRoot.setAttribute('id', 'ST-RoleExpansion_settings');
+const ofModuleBlocks = makeEl('div');
+ofModuleBlocks.setAttribute('id', 'roleEx-setting-module-blocks');
+ofSettingsRoot.appendChild(ofModuleBlocks);
+ofSettingsContainer.appendChild(ofSettingsRoot);
+// 真实浏览器里 #extensions_settings 本来就在 DOM 里；挂到 body 下面才能按全页数同名 id
+document.body.appendChild(ofSettingsContainer);
+let ofPanelInitSeen = 0;
+ofSettingsContainer.insertAdjacentHTML = () => { ofPanelInitSeen += 1; };
+emit('extension_settings_loaded');
+await ofTick(80);
+check('扩展设置加载事件真的走到了建面板那段（模板取到内容）', ofPanelInitSeen, 1);
+
+// 框架自己挂的两块：衣装在前、日记在后（顺序 = 模块清单顺序），且都是 .roleEx-settings-block
+const ofOutfitBlock = ofModuleBlocks.children?.[0];
+const ofJournalBlock = ofModuleBlocks.children?.[1];
+check('框架自己把两块挂进了 #roleEx-setting-module-blocks（不是自测代劳、也不是模板硬编码）',
+    ofLen(ofModuleBlocks), 2);
+check('child[0] 是衣装那块（.roleEx-settings-block + 卡片诊断提示在里面）',
+    ofHasClass(ofOutfitBlock, 'roleEx-settings-block')
+    && allNodes(ofOutfitBlock, n => n.id === 'roleEx-preset-card-hint-outfit').length === 1, true);
+check('child[1] 是日记那块（含 #roleEx-preset-card-hint）',
+    allNodes(ofJournalBlock, n => n.id === 'roleEx-preset-card-hint').length === 1, true);
+check('两块的先后 = modules/manifest.json 里两者的顺序（衣装 → 日记）',
+    (manifestJson?.modules ?? []).map(m => m.id).filter(id => id === 'outfit' || id === 'journal').join(','),
+    'outfit,journal');
+
+// 同名 id 只允许一份。⚠️ registry.get() 是「最后创建者胜」，自测若留过一份同名 shim 就会让
+// 下面几条恒真 —— 所以这里按 DOM 全树自己数。两个 stub 限制决定了数法：
+//   ① document.querySelectorAll 在桩里是写死的 () => []，不能用；
+//   ② 框架建好面板前会先把旧的 #ST-RoleExpansion_settings 摘下来，而 stub 的 remove() 只从
+//      children 里摘、不切断父子引用 —— 所以「页面」此刻是两棵树：body 那棵 + 设置面板根那棵。
+const ofPageCount = (id) => allNodes(document.body, n => n.id === id).length
+    + allNodes(ofSettingsRoot, n => n.id === id).length;
+check('全页只有一份 #roleEx-preset-card-hint-outfit（没有自测留下的同名节点）',
+    ofPageCount('roleEx-preset-card-hint-outfit'), 1);
+check('全页只有一份 #roleEx-setting-open-preset-outfit',
+    ofPageCount('roleEx-setting-open-preset-outfit'), 1);
+
+const ofHintEl = registry.get('roleEx-preset-card-hint-outfit');
+const ofOpenPresetBtn = registry.get('roleEx-setting-open-preset-outfit');
+check('卡片状态提示是 .roleEx-hint、初始文案以「状态：」开头',
+    ofHasClass(ofHintEl, 'roleEx-hint') && String(ofHintEl?.textContent || '').startsWith('状态：'), true);
+check('「打开预设面板」按钮在模块块里（class 含 menu_button、文案对得上）',
+    ofHasClass(ofOpenPresetBtn, 'menu_button') && ofOpenPresetBtn?.textContent === '打开预设面板', true);
+check('两个 id 都在衣装那块里面（而不是被挂到别处）',
+    allNodes(ofOutfitBlock, n => n === ofHintEl).length === 1
+    && allNodes(ofOutfitBlock, n => n === ofOpenPresetBtn).length === 1, true);
+
+// 卡片读不到时不抛、且走「没找到卡片」分支（打桩 getPromptById 返回 null）
+const ofRealGetPromptById = promptManager.getPromptById;
+promptManager.getPromptById = () => null;
+api.updateOutfitPresetCardHint();
+check('updateOutfitPresetCardHint() 可被调用且不抛，文案仍以「状态：」开头',
+    String(ofHintEl?.textContent || '').startsWith('状态：'), true);
+check('卡片不存在时走「没找到卡片」分支，并把 identifier 写给用户看',
+    String(ofHintEl?.textContent || '').includes('没有这张卡片')
+    && String(ofHintEl?.textContent || '').includes('roleExpansionOutfit'), true);
+promptManager.getPromptById = ofRealGetPromptById;
+// 卡片存在时（新增预设同款卡片）别名 adoptOutfitCardStateFromPreset 也要真的刷新文案
+promptsRef.push({ identifier: 'roleExpansionOutfit', name: '衣装（角色扩展）', system_prompt: true, marker: true });
+ofHintEl.textContent = '被清空';
+api.adoptOutfitCardStateFromPreset();
+check('adoptOutfitCardStateFromPreset() 走到模块并刷新了状态文案（别名是真的）',
+    String(ofHintEl?.textContent || '').startsWith('状态：')
+    && String(ofHintEl?.textContent || '').includes('roleExpansionOutfit'), true);
+
+// ---- 7. 源码层面（模块别自己实现框架已经提供的东西）----
+const ofModuleSrc = ['index', 'store', 'inject', 'ui']
+    .map(name => readFileSync(fileURLToPath(new URL('../modules/outfit/' + name + '.js', import.meta.url)), 'utf8'))
+    .join('\n');
+check('衣装：源码里没有自己拼 fetch（走框架的资源通道）', ofModuleSrc.includes('fetch('), false);
+check('衣装：源码里没有 <script', ofModuleSrc.includes('<script'), false);
+check('衣装：源码里没有 setExtensionPrompt（注入完全交给预设卡片）', ofModuleSrc.includes('setExtensionPrompt'), false);
+check('衣装：源码里没有 presets/save（对预设只读）', ofModuleSrc.includes('presets/save'), false);
+
+// ---- 8. 降级与可用性 ----
+const ofSavedCtx = globalThis.SillyTavern.getContext;
+// 群聊：没有角色目录 → 明确不可用，状态行打红字、两栏置灰
+globalThis.SillyTavern.getContext = () => ({ ...ofSavedCtx(), groupId: 'g-outfit' });
+await api.reloadOutfit();
+check('群聊：状态行打红字（roleEx-warn）', ofHasClass(ofStatusEl, 'roleEx-warn'), true);
+check('群聊：文案说明为什么不可用', String(ofStatusEl?.textContent || '').includes('群聊'), true);
+check('群聊：两栏置灰（.roleEx-outfit-cols 带 is-disabled）',
+    ofColsEl?.classList?.contains('is-disabled'), true);
+// 「还没选角色」：与状态栏模块同一条取舍 —— 不打红字，但两栏同样置灰
+globalThis.SillyTavern.getContext = () => ({
+    ...ofSavedCtx(), characters: {}, characterId: undefined, name2: '', getCurrentChatId: () => '',
+});
+await api.reloadOutfit();
+check('未选角色：不打红字（这不是本模块出错）', ofHasClass(ofStatusEl, 'roleEx-warn'), false);
+check('未选角色：文案点明原因', String(ofStatusEl?.textContent || '').includes('还没有选择角色'), true);
+check('未选角色：两栏同样置灰（没有落点就不给编辑）',
+    ofColsEl?.classList?.contains('is-disabled'), true);
+// 拿回角色 → 恢复
+globalThis.SillyTavern.getContext = ofSavedCtx;
+await api.reloadOutfit();
+check('切回单聊：状态行恢复（不打红字、两栏解灰、落点回来）',
+    ofHasClass(ofStatusEl, 'roleEx-warn') === false
+    && ofColsEl?.classList?.contains('is-disabled') === false
+    && String(ofStatusEl?.textContent || '').includes('_RoleExpansion/outfit/'), true);
+// ⚠️ 缺补丁必须放最后：这一条会把 patch-missing 缓存在模块的 rt.state.reason 里（补丁状态换页面之前不会变）。
+//    走的是「读文件被 404 拒绝」这条路 —— 探针只在页面生命周期里跑一次，此刻已经跑过了。
+journalEndpointAvailable = false;
+await api.reloadOutfit();
+check('缺补丁（资源端点 404）：状态行打红字', ofHasClass(ofStatusEl, 'roleEx-warn'), true);
+check('缺补丁：文案点出 st-twitter-assets.patch',
+    String(ofStatusEl?.textContent || '').includes('st-twitter-assets.patch'), true);
+check('缺补丁：两栏置灰', ofColsEl?.classList?.contains('is-disabled'), true);
+// 模块那条路走的是「读文件被 404 拒绝」（探针整个页面只跑一次，启动时那一次早就跑过了），
+// 同一时刻顺便验一下框架侧探针自己的返回
+const ofProbeBad = await api.probeAssetStorage('outfit');
+check('缺补丁：框架的资源探针如实报 patch-missing',
+    ofProbeBad.ok === false && ofProbeBad.reason === 'patch-missing', true);
+check('缺补丁：探针文案也点出 st-twitter-assets.patch',
+    String(ofProbeBad.text || '').includes('st-twitter-assets.patch'), true);
+journalEndpointAvailable = true;
+
+// ============================================================================
+// 9. 服务端白名单里没有 outfit（装了旧版补丁）→ 页面级不可用 sub-not-allowed
+//
+// 为什么另起实例：探针结果每个实例只探一次并缓存进 rt.state.reason，而主实例此刻已被上一节的
+// patch-missing 占住、桩里没法把它重置回「没探过」。这里直接 import 衣装的工厂（store.js / ui.js）
+// 并自备 rt，只驱动「探针 → reason → 渲染」这条真实代码路径。UI 层不需要 DOM 骨架 ——
+// rt.state.panel 是自测给的，所以不必复制框架的 el/section/collapsible（框架也没导出它们：
+// index.js 无 export，roleExpansion 调试对象里也没有）。
+// ⚠️ 这里刻意**不调 renderOutfit()**：它会顺带挂一次页面级重探（armOutfitReprobe），
+//    那些行为在第 ⑥ 段单独用可控时钟验，免得「探针次数」这类量被它掺进来。
+// ============================================================================
+const ofStoreFactory = (await import(new URL('../modules/outfit/store.js', import.meta.url).href)).createOutfitStore;
+const ofUiFactory = (await import(new URL('../modules/outfit/ui.js', import.meta.url).href)).createOutfitUi;
+
+/** 假 kernel：只给被测路径真正会碰到的设施（框架没导出的 stableHash / assetReasonText 自己最小实现） */
+const ofStubKernel = (probe, calls) => ({
+    clone: (o) => JSON.parse(JSON.stringify(o)),
+    ctx: () => ({ ...ofSavedCtx() }),                 // 单人会话 + 有角色目录（走得到探针那一步）
+    logError: () => {},
+    splitLines: (t) => String(t ?? '').split(/\r?\n/),
+    stableHash: (s) => {
+        let h = 0x811c9dc5;
+        for (const ch of String(s ?? '')) {
+            h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+        }
+        return h.toString(16).padStart(8, '0');
+    },
+    assetPathText: api.assetPathText,                 // 这个框架导出了，直接用真的
+    // 特意做成可辨认的前缀：用来证明「只有模块自己特判的原因才不走框架文案」
+    assetReasonText: (r) => '框架文案(' + r + ')',
+    toast: () => {},
+    uid: () => 'stub-uid',
+    readAssetText: async () => ({ ok: true, text: '', exists: false }),
+    writeAssetText: async () => ({ ok: true }),
+    probeAssetStorage: async (sub) => { calls.count += 1; return probe(sub); },
+});
+
+const ofStubPanel = (probe) => {
+    const rt = { state: {} };
+    const calls = { count: 0 };
+    rt.store = ofStoreFactory(ofStubKernel(probe, calls), rt);
+    rt.inject = { PRESET_PROMPT: { ID: 'roleExOutfitStub', NAME: 'stub', SOURCE_NAME: 'stub' } };
+    const ui = ofUiFactory({ el: makeEl, debounce: (fn) => fn, settings: {}, toast: () => {}, updateSetting: () => {} }, rt);
+    // 面板引用由自测直接给：本用例只关心状态行与两栏这两个节点
+    rt.state.panel = { status: makeEl('div'), cols: makeEl('div'), previewList: makeEl('div'), editor: makeEl('div') };
+    return { rt, calls, store: rt.store, ui, status: rt.state.panel.status, cols: rt.state.panel.cols };
+};
+
+// ① 纯函数：失败原因 → 页面级原因
+const ofPureStore = ofStubPanel(async () => ({ ok: true })).store;
+check('toPageReason：探针的 invalid-path（端点 400）归一成 sub-not-allowed',
+    ofPureStore.toPageReason('invalid-path'), 'sub-not-allowed');
+check('toPageReason：认得出的页面级原因原样返回', ofPureStore.toPageReason('patch-missing'), 'patch-missing');
+check('toPageReason：网络抖动不归页面级（不该整块置灰）', ofPureStore.toPageReason('network'), '');
+
+// ② 框架侧实测：端点回 400 时框架探针给的 reason 就是 invalid-path（也就是上面归一的输入）
+assetHttpStatus = 400;
+const ofProbe400 = await api.probeAssetStorage('outfit');
+assetHttpStatus = null;
+check('框架探针：资源端点 400 → reason = invalid-path', ofProbe400.reason, 'invalid-path');
+check('框架探针：400 时也带文案（框架侧对 invalid-path 的兜底）', String(ofProbe400.text || '').length > 0, true);
+
+// ③ sub-not-allowed：探针 → invalid-path → 页面级不可用 → 渲染
+const ofBad = ofStubPanel(async () => ({ ok: false, reason: 'invalid-path' }));
+const ofBadProbe = await ofBad.store.probeOutfitStorage();
+check('探针拿到 invalid-path → 归一成 sub-not-allowed（rawReason 原样保留）',
+    [ofBadProbe.ok, ofBadProbe.reason, ofBadProbe.rawReason], [false, 'sub-not-allowed', 'invalid-path']);
+check('outfitAvailability() 报 sub-not-allowed', ofBad.store.outfitAvailability(), { ok: false, reason: 'sub-not-allowed' });
+check('第 2 次 outfitAvailability() 走缓存（探针只发了 1 次请求）', ofBad.calls.count, 1);
+ofBad.ui.renderStatus();
+check('渲染：状态行打红字（roleEx-warn）', ofHasClass(ofBad.status, 'roleEx-warn'), true);
+const ofBadText = String(ofBad.status?.textContent || '');
+check('渲染：文案能直接照做 —— 含 ALLOWED_SUBDIRS', ofBadText.includes('ALLOWED_SUBDIRS'), true);
+check('渲染：文案给了要改成什么 —— 含 [\'twitter\', \'outfit\']', ofBadText.includes("['twitter', 'outfit']"), true);
+check('渲染：文案说了还要重启 —— 含「重启酒馆主进程」', ofBadText.includes('重启酒馆主进程'), true);
+check('渲染：文案不是框架那句（这个原因由模块自己特判）', ofBadText.includes('框架文案('), false);
+check('渲染：两栏置灰（.roleEx-outfit-cols 带 is-disabled）', ofBad.cols.classList.contains('is-disabled'), true);
+
+// ④ 对照组：同一套断言在可用状态下必须取反（证明上面那组不是恒真）
+const ofOk = ofStubPanel(async () => ({ ok: true, reason: null }));
+await ofOk.store.probeOutfitStorage();
+check('对照：探针 ok → outfitAvailability() 报可用', ofOk.store.outfitAvailability(), { ok: true, reason: null });
+ofOk.ui.renderStatus();
+check('对照：不红字', ofHasClass(ofOk.status, 'roleEx-warn'), false);
+check('对照：不置灰', ofOk.cols.classList.contains('is-disabled'), false);
+check('对照：状态行是落点文案（含 _RoleExpansion/outfit/）',
+    String(ofOk.status?.textContent || '').includes('_RoleExpansion/outfit/'), true);
+
+// ⑤ patch-missing（404）行为不变：仍然红字 + 置灰，但文案仍走框架那句
+//（框架那句里含 st-twitter-assets.patch —— 已在第 8 节的主实例上断言过）
+const ofMissing = ofStubPanel(async () => ({ ok: false, reason: 'patch-missing' }));
+await ofMissing.store.probeOutfitStorage();
+check('缺补丁：reason 仍是 patch-missing（没有被归一成别的）',
+    ofMissing.store.outfitAvailability().reason, 'patch-missing');
+ofMissing.ui.renderStatus();
+check('缺补丁：红字 + 置灰都不变',
+    ofHasClass(ofMissing.status, 'roleEx-warn') && ofMissing.cols.classList.contains('is-disabled'), true);
+check('缺补丁：文案仍然交给框架（assetReasonText）',
+    String(ofMissing.status?.textContent || ''), '衣装：框架文案(patch-missing)');
+
+// ⑥ 页面级失败态下的重探（重开面板给一次机会）：3 秒节流 + 只对页面级原因生效
+check('重探：刚探完就调用 → false（3 秒节流，面板反复开关不会变成轮询）',
+    ofBad.store.armOutfitReprobe(), false);
+const ofRealDateNow = Date.now;
+let ofClockSkew = 0;
+Date.now = () => ofRealDateNow() + ofClockSkew;
+try {
+    ofClockSkew = 4000;   // 把时钟推过 REPROBE_MIN_INTERVAL_MS(3000)
+    check('重探：过了节流窗口且原因是页面级 → true（面板会补一次只读探针）',
+        ofBad.store.armOutfitReprobe(), true);
+    check('重探：挂上之后 probed 被置回 false（下一次 loadOutfit() 会真去探）', ofBad.rt.state.probed, false);
+} finally {
+    Date.now = ofRealDateNow;
+}
+ofBad.rt.state.reason = 'network';
+check('重探：非页面级原因（抖动）→ false', ofBad.store.armOutfitReprobe(), false);
+ofBad.rt.state.reason = 'no-character';
+check('重探：没选角色 → false（那是每次现算的，不缓存也不重探）', ofBad.store.armOutfitReprobe(), false);
+
+// 补丁文件的换行统一成 LF：混进 CR 会让 `git apply` 在 LF 检出（Linux / macOS，或 core.autocrlf 未开）上直接失败
+check('补丁：三份 .patch 都是纯 LF（没有混进 CR）',
+    ['st-marker-prompt', 'st-journal-store', 'st-twitter-assets']
+        .filter(name => readFileSync(fileURLToPath(new URL('../patches/' + name + '.patch', import.meta.url)), 'utf8').includes('\r'))
+        .join(','), '');
 
 console.log(failed ? `\n${failed} / ${total} 项失败` : `\n全部通过（共 ${total} 项断言）`);
 process.exit(failed ? 1 : 0);

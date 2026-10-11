@@ -9,7 +9,7 @@
 index.js   描述符（id / title / icon / defaults）+ create(kernel) 组装 + services
 store.js   chatMetadata 读写（按会话隔离）+ 旧键一次性迁移
 inject.js  往主聊天注入状态文本 + 解析 / 剥离 <名称>值</名称> 标签
-ui.js      「角色状态栏」面板（开关 / 列表 / 批量添加 / 注入提示词子区块）
+ui.js      「角色状态栏」面板（平铺的开关 / 状态列表折叠块 / 注入提示词折叠块）
 ```
 
 | 文件 | 边界（不做什么） |
@@ -59,7 +59,7 @@ return {
 
 - **`buildPanelSection()` 是唯一的面板钩子**：只有在 `modules/manifest.json` 里列着、且没被 `settings.modules.state = false` 禁用时，
   框架才会在挂面板时调用它（`activeModules()` → `mod.api.buildPanelSection?.()`）。
-- 本模块**没有** `settingsBlock(kernel)`，也没实现 `debug`（框架那侧也没有读 `debug` 的代码）：
+- 本模块**没有** `settingsBlock(kernel)`，也没实现 `debug`（那是**预留能力，框架目前不读**）：
   所以酒馆「扩展」设置面板里**没有**状态栏的区块，控制台也没有 `roleExpansion.state.*` 命名空间。
 - **`defaults` 不管启用与否都会被并进设置默认值** —— 禁用再启用不会丢用户配置（框架行为，见主文档 §1.1）。
 
@@ -298,8 +298,9 @@ c.setExtensionPrompt(
 
 | 元素 | id / class | 语义 |
 | --- | --- | --- |
-| 外层区块 | `#roleEx-state-section`，图标 `fa-solid fa-heart-pulse`，`section('角色状态栏', { open: false })` | 默认收起（三个模块的一级区块都默认折叠） |
-| 注入提示词子区块 | `#roleEx-state-tpl-section`，图标 `fa-solid fa-wand-magic-sparkles`，`section('状态注入提示词', { open: false })` | **挂进 `s.content` 而不是 `s.root`** —— 这样它与面板正文走同一套 10px 间距，视觉上明确属于这个面板 |
+| 外层区块 | `#roleEx-state-section`，图标 `fa-solid fa-heart-pulse`，`section('角色状态栏', { open: false })` | 默认收起（四个模块的一级区块都默认折叠） |
+| 状态列表折叠块 | `#roleEx-state-list-fold`，`collapsible('状态列表（随会话保存）', { open: true })` | 标题是新起的（原来是区块里的一个 `roleEx-label`）；列表 + 工具行 + 「批量添加」都在它体内 |
+| 注入提示词折叠块 | `#roleEx-state-tpl-fold`，`collapsible('状态注入提示词', { open: false })` | 原来是**嵌套的 `section()`**（自带黑底 = 视觉上的另一个层级），现在与上面那个折叠块同级 |
 | 列表容器 | `#roleEx-state-list` + `.roleEx-list` | `renderStateList()` 的重绘目标；超过 420px 内部滚动 |
 | 列表项 | `.roleEx-state-row` / `.roleEx-state-name` / `.roleEx-state-value` / `.roleEx-state-edit` | 见下 |
 | 模板文本框 | `#roleEx-state-inject-prompt`（`.text_pole .roleEx-textarea`，rows=7） | 输入即时保存，防抖 400ms |
@@ -308,6 +309,10 @@ c.setExtensionPrompt(
 
 几条与状态面板直接相关的约定：
 
+0. **正文只有一层**：平铺内容 + 同级折叠块。不允许再套 `.roleEx-block`，也不允许把 `section()` 嵌进
+   `section()` —— 旧版正是一个 `.roleEx-block` 包着一个嵌套 section，**两个层级并存**；现在与推特模块同一套。
+   原来那两处 `.roleEx-block` 已拆掉：五个开关**平铺**（它们本来就没有标题，不额外造一个），
+   「状态列表（随会话保存）」的标题改由折叠块 header 承担。自测里对四个模块的正文都钉了这条契约。
 1. **折叠箭头语义统一为酒馆原生的「收起 `down` ↓ / 展开 `up` ↑」**，初始 `display` 必须显式写死
    （`section()` 的 `setOpen()` 负责）。这两条是历史坑，改 `section()` 时别只改一半（主文档 §5 第 1、2 条）。
 2. **不换行 flex 行里的文字标签必须加 `.roleEx-inline-label`**：

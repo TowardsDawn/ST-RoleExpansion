@@ -33,6 +33,16 @@ function normalizeImageName(value) {
     return name;
 }
 
+/**
+ * URL 媒体（视频 / 动图 / 静态图）：**不落角色目录**，只把地址存进 JSONL。
+ * 只放行 http(s) —— 手改 JSONL 塞进来的 javascript: / data: 之类不会进到 src 里。
+ * 注意 http:// 与 https:// 在浏览器里算两种来源：页面是 https 时 http 媒体会被拦（混合内容）。
+ */
+function normalizeMediaUrl(value) {
+    const url = String(value ?? '').trim();
+    return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
+}
+
 /** 头像 / 横幅固定用这两个名字：换图即覆盖，不会残留旧文件 */
 const AVATAR_NAME = 'avatar.png';
 const BANNER_NAME = 'banner.jpg';
@@ -104,6 +114,7 @@ function normalizeProfile(src) {
 function normalizeTweet(src, fallbackSeq) {
     const stats = src && typeof src.stats === 'object' && src.stats ? src.stats : {};
     const num = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; };
+    const mediaUrl = normalizeMediaUrl(src?.mediaUrl);
     return {
         __roleExpansion: KIND_TWEET,
         id: String(src?.id || uid()),
@@ -111,14 +122,18 @@ function normalizeTweet(src, fallbackSeq) {
         content: String(src?.content ?? ''),
         seq: Number.isFinite(Number(src?.seq)) ? Math.round(Number(src.seq)) : fallbackSeq,
         pinned: src?.pinned === true,
-        image: normalizeImageName(src?.image),   // 配图文件名；空 = 纯文字推文
+        image: normalizeImageName(src?.image),   // 本地配图文件名；空 = 没本地图
+        mediaUrl: mediaUrl,                   // URL 媒体（视频 / 动图 / 静态图）；空 = 没有
+        mediaKind: mediaUrl ? rt.stats.normalizeMediaKind(src?.mediaKind, mediaUrl) : '',
         liked: src?.liked === true,           // 点过「❤️ 点赞」（点一下 +1、再点 -1）
         retweeted: src?.retweeted === true,   // 点过「🔄 转发」（同上）
+        bookmarked: src?.bookmarked === true, // 点过「🔖 书签」（数值只在详情页显示）
         stats: {
             view: num(stats.view),
             like: num(stats.like),
             retweet: num(stats.retweet),
             reply: num(stats.reply),
+            bookmark: num(stats.bookmark),
         },
         createdAt: Number(src?.createdAt) || Date.now(),
         updatedAt: Number(src?.updatedAt) || Number(src?.createdAt) || Date.now(),

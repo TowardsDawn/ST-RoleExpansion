@@ -5,6 +5,206 @@
 
 > `0.2.x` 及更早为本地迭代，条目依据 README 与代码整理，细节未必完整。
 
+## [0.10.0] - 2026-10-11
+
+### 新增
+
+- **新模块「衣装打扮」（`modules/outfit/`，id `outfit`，标题「衣装打扮」，图标 `fa-solid fa-shirt`）** —— 第四个可拆模块：
+  维护「这一场里现在穿什么」，并把选中的衣装注入后续每一次生成。拆掉整个目录或禁用 = 没有衣装功能，框架与其它模块照常工作。
+  - **三大部分与分类**：**外**（头饰 `hat` / 上衣 `top` / 下装 `bottom` / 袜子 `socks` / 鞋子 `shoes`）、
+    **内**（内衣 `underwear` / 内裤 `underpants`）、**其他**（用户自建，key 恒为 `custom-<uid>`，固定落在「其他」）。
+    七个固定分类的 key 是契约的一部分，**不可改名、不可删除**；JSONL 里缺了就按内置定义补齐。
+  - **备选装备表**：每个分类一个输入框，**只按英文逗号 `,` 切分**（与 ST 世界书的「关键字列表」一致）→
+    `trim()` → 丢掉空串 → **去重保序**；中文逗号 `，` 与顿号 `、` **不是**分隔符。提交是整表替换；
+    新备选表里已经不存在的已选 tag 会**连带清掉**（与读取归一化同一套语义）。
+  - **选择语义**：**分类内多选**（可以叠穿）；顺序**恒按备选表顺序**，与点击先后无关。
+  - **落点**：`<user>/chats/<角色目录>/_RoleExpansion/outfit/RoleExpansion_outfit_c_<角色hash8>_j_<会话hash8>.jsonl`
+    —— 换会话换文件、跟着角色目录走；走模块私有资源通道（`/api/role-expansion/asset/*`，`sub = 'outfit'`）。
+    文件是**稳定三行**：`outfit-session`（会话头）/ `outfit-catalog`（分类表 + 备选 tag）/ `outfit-selection`（已选 tag）。
+    读取时会归一化：固定分类补齐、未知 key 与未知 `part` 丢掉、`picked` 里不在备选表里的 tag 丢掉，
+    解析失败的行会被跳过并计数（状态行提示一次「已跳过 N 行无法解析的衣装数据」）。
+  - **注入**：注册运行时正文源 `roleExpansionOutfit`（`{ name: '角色扩展（衣装）', edit: true, toggle: true }`）；
+    **预设里必须由用户自己加一张 `marker: true` 卡片**（`identifier` = `roleExpansionOutfit`），
+    位置与启停都在预设 UI 里管 —— 扩展**不创建 / 不修改 / 不写预设**。
+  - **注入正文**：`settings.outfitInjectPrompt` 模板（默认两行，含 `{{outfitList}}`）
+    渲染成 `[以下是 {{char}} 当前的衣装打扮，请在描写与对话中保持一致]` + 分组清单
+    （**每部分一行**，行内 `分类名=tag1 / tag2`，分类之间 `；`，**空的部分整行不出现**）；
+    **一个衣装项都没选 → 整条不注入**。
+  - **三道正文闸**：卡片没插进任何 `prompt_order` 块 / 卡片 `enabled === false` / 没有选中项 —— 任一不过都返回空串。
+  - **降级**：群聊与缺服务端补丁是**红字**，没选角色**不打红字**（那不是本模块出错）；
+    三种情况下 `.roleEx-outfit-cols` 都带 `is-disabled` 整块置灰。
+- **「扩展」设置面板新增衣装区块**：卡片诊断 `#roleEx-preset-card-hint-outfit`
+  + 一键打开预设面板的 `#roleEx-setting-open-preset-outfit`（只有诊断，没有任何可改项）。
+- **衣装样式**：`style.css` 新增 `.roleEx-outfit-*` 一族（左右两栏、分类行、芯片、预览行、置灰态），
+  窄屏（≤780px）下两栏改竖排。
+
+### 变更
+
+- **主面板区块顺序调整**：现在是 **衣装打扮 → 角色状态栏 → 日记 → 推特**
+  （顺序取自 `modules/manifest.json` 的 `modules[]`，扩展设置面板里的「模块」表同序）。
+  衣装那块带 `roleEx-span-all`，占最上面那条整行；推特那块也带，因此独占最后一行。
+  面板副标题、区块 DOM 顺序都跟着清单走，框架代码没有任何改动。
+- **`patches/st-twitter-assets.patch` 的子目录白名单**从 `['twitter']` 改成 `['twitter', 'outfit']`
+  （**同行替换、不增删行**；三份补丁的净新增行数仍是 151 / 131 / 182，顺序仍是 marker → journal → twitter-assets）。
+  ⚠️ **已经装过旧版的人不要重新 `git apply` 这份补丁** —— `src/endpoints/role-expansion-assets.js` 在 ST 里已经存在，
+  会以 `already exists` 失败。正确做法：打开 `<酒馆>/src/endpoints/role-expansion-assets.js`，
+  把那一行改成 `const ALLOWED_SUBDIRS = ['twitter', 'outfit'];`，然后**重启酒馆主进程**。
+- 版本号 0.9.0 → 0.10.0（`manifest.json` / `package.json` / README badge / 本文件）。
+- 文档：新增 `modules/outfit/README.md` 与 `modules/outfit/DEVELOPMENT.md`；
+  主 README / DEVELOPMENT 里所有模块枚举（「这是什么」模块表、快速开始、界面导览、模块表、仓库结构目录树、
+  补丁说明、已知限制、调试入口）都补成四个模块，并改成新的区块顺序。
+
+### 修复
+
+- **模块自建的「扩展设置面板」区块从来没有渲染出来过**（框架 bug，衣装与日记两块一起中招）。
+  - **症状**：容器 `#roleEx-setting-module-blocks` 里一直是空的（`children.length = 0`）——
+    衣装的「衣装卡片 · `roleExpansionOutfit`」诊断块与日记的卡片区块都不显示，而「扩展」面板其余部分正常。
+    主面板区块、注入、落盘都不受影响，所以这个 bug 很容易被当成「模块没写 `settingsBlock`」。
+  - **根因**：`renderModuleSettingsBlocks()` 在**描述符**上找 `desc.settingsBlock`，
+    而模块按约定把可选能力挂在 `create(kernel)` 的返回值（`desc.api`）上。
+    `buildPanelSection()` 与 `services` 本来就是按 api 读的，所以这是**唯一走岔的一处能力**。
+  - **修法**：改成 **api 优先、描述符回落**（`typeof desc.api.settingsBlock === 'function' ? desc.api : desc`），
+    并仍然要求 `desc.api` 存在 —— 模块被拆掉 / 被禁用时照样什么都不挂（「不会留下一块永远『检测中…』的 UI」这条保证不变）。
+  - **实测**：改前容器 `children.length = 0`；改后 `= 2`（child[0] 衣装、child[1] 日记，顺序 = 清单顺序）。
+  - **约定**：模块的可选能力一律挂在 `create(kernel)` 返回的 api 上；早期写在描述符上的 `settingsBlock` 写法继续兼容。
+
+### 测试
+
+- 自测覆盖衣装模块（`npm test`，搜 `衣装` / `outfit` 定位）：
+  面板结构（清单第一条 = 主面板第一块、带 `roleEx-span-all`、默认收起、正文直接子节点三个）；
+  三大部分与七个固定分类、自定义分类的改名 / 删除 / 查重；
+  备选表的英文逗号切分与去重保序（**中文逗号不切分**）、连带清选；
+  分类内多选与「顺序按备选表」；文件名的双 hash 前缀与三行结构；读取归一化与坏行计数；
+  `{{outfitList}}` 的分组格式、空选不注入、三道正文闸；
+  群聊 / 缺补丁 / 没选角色三条不可用路径的表现；
+  **`sub-not-allowed`（旧版补丁、端点 400）一整条链**（`toPageReason('invalid-path')` → `sub-not-allowed` →
+  红字 + 三个 token 的文案 + 置灰 + 探针只探一次的缓存），并配两个对照组（探针 ok → 不红不灰；
+  `patch-missing` → 红灰不变且仍走框架文案）；失败态下的**重探**（`armOutfitReprobe()` 的 3 秒节流与生效条件）；
+  以及**框架自己把恰好两块设置区块挂进 `#roleEx-setting-module-blocks`**（衣装在前、日记在后，同名 id 全页唯一）。
+- `npm run test:patch` 的 `tools/patch-asset-test.mjs` 覆盖 `sub = 'outfit'` 已在白名单内
+  （`_RoleExpansion/outfit/` 的读写删与越权路径按同一套规则被拒）。
+
+## [0.9.0] - 2026-09-20
+
+### 新增
+
+- **推文详情页**（推特模块）：点推文的**框**（正文 / 头像 / 时间 / 媒体都算，控件区与视频不算）→ 整个 iframe 换成
+  那条推文的详情页，左上角 `←` 返回。结构照样例 `twitter_tweet.html`：48px 大头像、23px 正文、
+  时间行（含 `<浏览数> 查看`）、数值行 `<评论> 评论　<转帖> 转帖　<喜欢> 喜欢　<书签> 书签`、
+  操作栏 `💬 🔄 ❤️ 🔖 🔗`（**旁边不带数字**）。
+  - 实现方式是**每条推文预渲染一份详情页**、与主页放在同一份 srcdoc 里，进出详情只切 `display` ——
+    不重建 srcdoc，所以回主页时推文列表的滚动位置还在原处，也没有重载闪动。
+  - 进出详情会把视频停下来：主页那段在进详情时立刻暂停（画面没了、声音不能跟着走），返回时同理。
+  - 主页卡片与详情页共用 `data-id`，`patchActionNode()` 一次把两处的数字与 `.is-active` 一起刷新：
+    在哪边点赞 / 转发 / 书签，两边同步。
+- **书签 `🔖`**：主页与详情页都能点（`stats.bookmark` ±1、`bookmarked` 落盘、图标变蓝）。
+  **主页刻意不显示书签数**（只显示「点没点过」），数字只在详情页的数值行里；编辑器里的数字框从四个变五个。
+- **分享 `🔗`**：纯图标，点了没有任何行为（与样例一致，也不写文件）。
+- **媒体：URL 视频 / 动图 / 静态图**：推文行新增 `mediaUrl` 与 `mediaKind`，**只存地址、不落角色目录**。
+  `.mp4` / `.webm` / `.mov` / `.m4v` / `.ogv` → `<video controls preload="metadata">`（**点击后播放**，
+  同一条时间线里播一个会自动暂停另一个）；其余（`.gif` / `.png`（APNG）/ `.jpg` / 认不出）→ `<img>`，进页面自己就动。
+  没有后缀的流式地址可以在编辑器里手动选类型。
+  - **URL 优先**：本地配图与 URL 同时存在时渲染 URL 那张；清掉 URL 自动回到本地配图（本地文件与字段都不动）。
+  - URL 只认 `http(s)`（`javascript:` / `data:` / 相对路径一律忽略）；**FLV 刻意不支持** ——
+    浏览器原生播不了 `video/x-flv`，而这个页面既不给脚本、仓库也没有依赖，所以 `.flv` 不会被当成视频。
+
+### 变更
+
+- **主面板的区块顺序调整**：现在是 **角色状态栏 → 日记 → 推特**（顺序取自 `modules/manifest.json` 的 `modules[]`，
+  扩展设置面板里的「模块」表同序）。推特那块带 `roleEx-span-all`，因此独占最后一行，
+  上面两块两列并排；面板副标题、区块 DOM 顺序都跟着清单走，框架代码没有任何改动。
+- **「媒体」标签从占位变成真过滤**：只列带媒体的推文（本地配图或 URL 都算）；一条都没有时才显示空态提示。
+  空态文案里那句「本模块只收录纯文本推文」去掉了 —— 有了媒体之后它已经不成立。
+- 主页操作行从 4 项变 6 项：`💬 n · 🔄 n · ❤️ n · 📊 n · 🔖 · 🔗`（`max-width` 400 → 460px）。
+  `📊 浏览` 排在 `🔖 书签` 之前，编辑弹窗里的五个数字框同序（评论 / 转帖 / 喜欢 / 浏览 / 书签）。
+- **主页卡片里的媒体（图片 / 动图 / 视频）改成「1/4 面积」预览**：宽度取卡片的一半
+  （`.tweet .tweet-image, .tweet .tweet-video { width: 50% }`，高度按比例算，所以面积正好 1/4）。
+  选择器带 `.tweet` 前缀 —— **只缩主页那份**，详情页里的媒体保持原尺寸。
+- 管理列表每行的数字提示加上 `🔖`；带媒体的推文前面按类型显示 `🎬`（视频）/ `🖼`（URL 图）/ `📷`（本地图）。
+- srcdoc 的结构从「body 直接 flex 竖排」改成两张「页」：`#tw-home`（资料头 + 列表）与
+  `#tw-detail-wrap`（每条推文一份详情，默认隐藏）。
+
+### 测试
+
+- 自测 424 → 458 项断言：`.mp4` → `<video>`（带 `controls`、无 `autoplay`）、`.gif` → `<img>`、无后缀 + 手选类型、
+  `.flv` 不算视频、URL 与本地图共存时 URL 优先、清掉 URL 回落到本地图、`javascript:` 不进 srcdoc、`has-media` 标记；
+  每条推文一份详情页 + 一个返回键、数值行四项、操作栏无数字、主页 `🔖` / `🔗` 不带数字；
+  点卡片进详情 / 点返回复原 / 点控件区**不跳转**、播一个视频暂停另一个、「媒体」标签只留带媒体的卡片；
+  编辑器五个数字框。
+- 旧的「body flex 竖排」「配图只渲染一张 `<img>`」这类断言按新结构改写为「`#tw-home` flex 竖排」
+  「**主页那一段**里的 `<img>` 数量」（详情页也会各渲染一份媒体，所以媒体断言一律按主页那一段数）；
+  主页媒体的 1/4 面积预览（带 `.tweet` 前缀的 50% 宽度规则在，基础 `.tweet-image` 规则里没有 `width` 覆盖）。
+
+## [0.8.2] - 2026-09-19
+
+### 变更
+
+- **日记 / 角色状态栏两个模块的正文层次拉平，与推特模块统一成同一套**：正文里**只有平铺内容 + 同级折叠块** ——
+  不再有 `.roleEx-block` 包裹层，也不再有一个面板嵌另一个面板（嵌套 `section()`）。三个模块的正文直接子节点现在
+  都只有「平铺行 / 折叠块」两种东西，自测里对三个模块都钉了这条契约。
+  - **日记**：`提示词注入` 区块 → 平铺的一行注入状态（文案自带「注入状态：」，不再需要标题）；
+    `新日记` 区块 → 折叠块（默认展开）；原本嵌在它里面的「角色设定（隔离通道）」「参考聊天楼层」
+    **提升为同级**；`日记列表` 去掉外层区块包裹；「日记主提示词」由**嵌套 section** 改为同级折叠块（默认收起）。
+    正文直接子节点固定为 `[注入状态行, 新日记, 角色设定, 参考聊天楼层, 日记列表, 主提示词]`。
+  - **角色状态栏**：原来的两个 `.roleEx-block` 拆掉 —— 五个开关**平铺**（它们本来就没有标题，不额外造一个），
+    「状态列表（随会话保存）」与「状态注入提示词」成为同级折叠块（前者默认展开、后者默认收起）；
+    「批量添加」仍是状态列表折叠块体内的一行小标题。
+  - 新 id：`#roleEx-new-journal-fold` / `#roleEx-main-prompt-fold` / `#roleEx-state-list-fold` / `#roleEx-state-tpl-fold`
+    （旧的 `#roleEx-inject-block` / `#roleEx-new-journal-block` / `#roleEx-state-tpl-section` 不再存在）。
+  - 折叠块 header 没有图标位（与推特模块的折叠块一致），所以日记主提示词 / 状态注入提示词那两个魔杖图标去掉了。
+- **楼层选择框改成标准区块**：原来它是一个自己画边框的框（`1px` + 圆角 + 4px 内距），现在直接给列表
+  `#roleEx-floors` 加 `.roleEx-block`（底色 / 圆角 / 内距都走区块那套，与其它区块一致），
+  `.roleEx-floors` 只保留它独有的 260px 高度上限与内部滚动。**是给列表本身加类，不是在外面再套一层容器** ——
+  否则就是「区块里再套一个框」。
+- **已在 SillyTavern 1.19.0 上复验**：三份补丁照旧干净落地；扩展用到的 `getContext()` 接口
+  （`substituteParams` / `setExtensionPrompt` / `generateRaw` / `saveMetadata` / `chatMetadata` …）、
+  抽屉锚点（`#top-settings-holder` / `#avatar_controls .chat_lorebook_button` / `#settings_preset_openai`）、
+  补丁端点依赖的 `isPathUnderParent` 与 `validateFileName.js` 默认导出都没变，代码无需改动。
+- 删掉随之失效的 CSS 规则 `.roleEx-section-body > .roleEx-section { background-color: transparent }`
+  —— 它的注释写着「嵌套在外层面板正文里的子区块（日记主提示词 / 状态注入提示词）」，而这两处现在都是折叠块，
+  规则没有任何选择目标了（留着会误导：它把「两层 section」当成正常写法）。
+
+### 修复
+
+- **两份服务端补丁的行尾混进了 CR，在 LF 检出的酒馆上 `git apply` 直接失败**：
+  `st-journal-store.patch` 有 16 行、`st-twitter-assets.patch` 有 14 行带 CR（都在 `src/server-startup.js`
+  那段 `import` / `app.use()` 的上下文里）—— 生成 diff 时是从真实工作区（CRLF 检出）取的上下文，于是被带进来。
+  后果：Windows + `core.autocrlf=true` 的检出上「碰巧能打」（CR 恰好和文件对得上），
+  Linux / macOS（或 `core.autocrlf` 未开）的 LF 检出上则报 `patch does not apply`；
+  即使打上了，插入的行是 LF、上下文行是 CRLF，同一个文件混着两种行尾。
+  现在三份补丁统一成纯 LF，并在 **1.18.0 与 1.19.0 的纯净检出上分别复验**：
+  LF / CRLF 两种工作区里三份都能 `git apply` 干净落地（1.19.0 只带 9 行 / 1 行偏移），落盘结果与当前安装逐字节一致。
+  顺手把两份服务端补丁里 **4 组「先删一行、又原样加回来」的空操作**改回上下文行（`git apply --numstat` 的删改数从 2 降到 0，净增行数不变）。
+
+### 测试
+
+- 自测 406 → 424 项断言：楼层选择框带 `roleEx-block` + 是「参考聊天楼层」折叠体的直接子节点 +
+  它自己不再画边框（但 260px 滚动上限还在）；日记正文直接子节点的 id 序列、角色状态栏正文直接子节点的 id/class 序列、
+  「角色设定 / 参考聊天楼层」与「新日记」同父（同级而非子级）、主提示词折叠块默认收起（body `display:none`）、
+  「新日记」默认展开；以及一条**跨三个模块的契约断言**：任何模块的正文直接子节点里都不许出现
+  `.roleEx-block`，也不许出现嵌套的 `.roleEx-section`；以及一条「三份 `.patch` 全是纯 LF、不含 CR」
+  （防止再用 CRLF 工作区生成 diff —— 这条断言在注入一个 CR 后会 FAIL，已实测）。
+
+## [0.8.1] - 2026-09-19
+
+### 修复
+
+- **面板锁定（🔒）现在真的会被记住**。此前它只活在内存里（`ui.panelPinned`），F5 / Ctrl+F5 / 重启酒馆主进程
+  都会回到未锁定。现在点 🔒 会写进扩展设置的**独立键** `ST-RoleExpansion_ui`（随 `saveSettingsDebounced()`
+  落进 `settings.json`，服务端 + 按用户），启动时由 `applyPanelPin()` 读回并应用；同时暴露
+  `roleExpansion.applyPanelPin()` 作为排查入口。
+  - 用独立键而不是 `settings`：锁定描述的是界面状态。「恢复默认设置」不该顺手把它解锁，
+    「存为默认设置」也不该把当时锁没锁一起快照进去（与 `customDefaults` 同样的取舍，见 DEVELOPMENT §4.6）。
+- **锁定的面板被别的抽屉「打开」过一次后，羽毛图标会错误地停在关闭态**（面板其实还开着，点一下才知道）。
+  酒馆重置图标时找的是 `.openIcon:not(.drawerPinnedOpen)`，而此前只给面板加了 `pinnedOpen`、
+  没给图标加 `drawerPinnedOpen` —— 酒馆给 World Info / 左右侧栏加的就是后者。现在两处一起设。
+
+### 测试
+
+- 自测 394 → 406 项断言：锁定默认状态三处一致；点 🔒 后写进独立键 + 面板 `pinnedOpen` + 图标
+  `drawerPinnedOpen`；锁定不进 `settings`；清空 DOM 与内存后由启动路径读回（四处恢复）；
+  取消锁定落盘 `false`；启动那处调用不带参数（防「只认内存值」回归）。
+
 ## [0.8.0] - 2026-09-18
 
 ### 变更

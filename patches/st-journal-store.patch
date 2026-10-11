@@ -141,8 +141,7 @@ index 9eb9a0e..e587fa2 100644
  import { router as dataMaidRouter } from './endpoints/data-maid.js';
  import { router as backupsRouter } from './endpoints/backups.js';
  import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
--import { router as volcengineRouter } from './endpoints/volcengine.js';
-+import { router as volcengineRouter } from './endpoints/volcengine.js';
+ import { router as volcengineRouter } from './endpoints/volcengine.js';
 +import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
  
  /**
@@ -151,8 +150,7 @@ index 9eb9a0e..e587fa2 100644
      app.use('/api/minimax', minimaxRouter);
      app.use('/api/data-maid', dataMaidRouter);
      app.use('/api/backups', backupsRouter);
--    app.use('/api/image-metadata', imageMetadataRouter);
-+    app.use('/api/image-metadata', imageMetadataRouter);
+     app.use('/api/image-metadata', imageMetadataRouter);
 +    app.use('/api/role-expansion', roleExpansionRouter);
  }
  

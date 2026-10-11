@@ -75,6 +75,126 @@ function renderAvatar(imgClass) {
         : '<div class="' + imgClass + '-placeholder"></div>';
 }
 
+/**
+ * 这条推文要用哪张图：**URL 媒体优先**（用户选的取舍），没 URL 才回退到本地配图（资产通道的 data URL）。
+ * 返回 null = 什么都没配。
+ */
+function mediaOf(tweet) {
+    const url = String(tweet?.mediaUrl || '').trim();
+    if (url) {
+        return { kind: rt.stats.normalizeMediaKind(tweet?.mediaKind, url), url };
+    }
+    const asset = String(tweet?.image || '').trim();
+    const dataUrl = asset ? String((rt.state.tweetImages || {})[asset] || '') : '';
+    return dataUrl ? { kind: 'image', url: dataUrl } : null;
+}
+
+/**
+ * 媒体标签。只有两种形态：
+ *   video → <video controls>（**不 autoplay**：要求是「点击后播放」，多种视频的互斥由父页面接线）
+ *   其它  → <img>（GIF / APNG 由浏览器自己动，静态 png/jpg 也一样显示）
+ * 类名沿用 .tweet-image / .tweet-video：主页卡片与详情页共用同一套样式。
+ */
+function renderMedia(tweet) {
+    const media = mediaOf(tweet);
+    if (!media) {
+        return '';
+    }
+    if (media.kind === 'video') {
+        return '<video class="tweet-video" src="' + escapeHtml(media.url) + '" controls preload="metadata" playsinline></video>';
+    }
+    return '<img class="tweet-image" src="' + escapeHtml(media.url) + '" alt="配图" loading="lazy">';
+}
+
+/** 详情页的操作栏：与样例一致 —— 只有图标，没有数字（数字在上面那行统计里） */
+function renderDetailActionBar(tweet) {
+    const retweetClass = 'tweet-action-btn tweet-action-retweet' + (tweet.retweeted ? ' is-active' : '');
+    const likeClass = 'tweet-action-btn tweet-action-like' + (tweet.liked ? ' is-active' : '');
+    const bookmarkClass = 'tweet-action-btn tweet-action-bookmark' + (tweet.bookmarked ? ' is-active' : '');
+    return [
+        '<div class="tweet-action-bar">',
+        '  <span class="tweet-action-btn tweet-action-reply" title="评论">💬</span>',
+        '  <span class="' + retweetClass + '" title="转帖">🔄</span>',
+        '  <span class="' + likeClass + '" title="喜欢">❤️</span>',
+        '  <span class="' + bookmarkClass + '" title="书签">🔖</span>',
+        '  <span class="tweet-action-btn tweet-action-share" title="分享">🔗</span>',
+        '</div>',
+    ].join('\n');
+}
+
+/**
+ * 详情页的数值行：评论 / 转帖 / 喜欢 / 书签 四项，每项「数字 + 名称」（照样例的写法）。
+ * 每个数字带 data-stat，父页面点 ❤️/🔄/🔖 后按它就地改 strong 里的值。
+ */
+function renderDetailStatRow(tweet) {
+    const stats = tweet.stats || {};
+    const cell = (key, label) => '  <span class="tweet-stat" data-stat="' + key + '"><strong>'
+        + escapeHtml(formatCount(stats[key])) + '</strong> ' + label + '</span>';
+    return [
+        '<div class="tweet-stats-row">',
+        cell('reply', '评论'),
+        cell('retweet', '转帖'),
+        cell('like', '喜欢'),
+        cell('bookmark', '书签'),
+        '</div>',
+    ].join('\n');
+}
+
+/**
+ * 一条推文的详情页（整份文档里的第二张「页」）。
+ * 每条推文预渲染一份、默认 display:none —— 点卡片只切可见性，不重建 srcdoc：
+ * 回主页不丢列表滚动位置、点起来没有 iframe 重载的闪动；而且主页卡片与详情页共用 data-id，
+ * 父页面一次就能把两处的数字/激活态一起刷新。
+ */
+function renderTweetDetail(tweet, profile) {
+    const name = escapeHtml(profile.name || '（未命名）');
+    const handle = escapeHtml(profile.handle || '');
+    const time = String(tweet.time || '').trim();
+    const stats = tweet.stats || {};
+    const media = renderMedia(tweet);
+    const parts = [];
+    parts.push('<div class="tw-detail-page" data-id="' + escapeHtml(tweet.id) + '">');
+    parts.push('  <div class="tw-top-bar">');
+    parts.push('    <button class="tw-back-btn" title="返回">←</button>');
+    parts.push('    <span class="tw-top-bar-title">帖子</span>');
+    parts.push('  </div>');
+    parts.push('  <div class="tweet-main">');
+    parts.push('    <div class="tweet-author-row">');
+    parts.push('      <div class="tweet-avatar-lg">' + renderAvatar('tweet-avatar-lg-img') + '</div>');
+    parts.push('      <div class="tweet-author-info">');
+    parts.push('        <div class="tweet-name-row">');
+    parts.push('          <span class="tweet-name">' + name + '</span>');
+    if (profile.verified !== false) {
+        parts.push('          ' + VERIFIED_SVG);
+    }
+    if (handle) {
+        parts.push('          <span class="tweet-handle">' + handle + '</span>');
+    }
+    parts.push('        </div>');
+    parts.push('      </div>');
+    parts.push('    </div>');
+    parts.push('    <div class="tweet-content-lg">' + escapeHtml(tweet.content) + '</div>');
+    if (media) {
+        parts.push('    ' + media);
+    }
+    parts.push('    <div class="tweet-meta-time">');
+    if (time) {
+        parts.push('      <div class="tweet-meta-date">' + escapeHtml(time) + '</div>');
+    }
+    parts.push('      <div><strong>' + escapeHtml(formatCount(stats.view)) + '</strong> 查看</div>');
+    parts.push('    </div>');
+    parts.push(renderDetailStatRow(tweet));
+    parts.push(renderDetailActionBar(tweet));
+    parts.push('  </div>');
+    if (handle) {
+        parts.push('  <div class="tweet-main">');
+        parts.push('    <div class="reply-hint">回复给 <span class="reply-handle">' + handle + '</span></div>');
+        parts.push('  </div>');
+    }
+    parts.push('</div>');
+    return parts.join('\n');
+}
+
 function renderTweet(tweet, profile) {
     const name = escapeHtml(profile.name || '（未命名）');
     const handle = escapeHtml(profile.handle || '');
@@ -83,7 +203,9 @@ function renderTweet(tweet, profile) {
     const stats = tweet.stats || {};
     const parts = [];
 
-    parts.push('<div class="tweet" data-id="' + escapeHtml(tweet.id) + '">');
+    const media = renderMedia(tweet);
+    // has-media 只用于「媒体」标签的过滤（父页面按它显隐卡片）
+    parts.push('<div class="tweet' + (media ? ' has-media' : '') + '" data-id="' + escapeHtml(tweet.id) + '">');
     parts.push('  <div class="tweet-avatar">' + renderAvatar('tweet-avatar-img') + '</div>');
     parts.push('  <div class="tweet-body">');
     if (tweet.pinned) {
@@ -99,17 +221,22 @@ function renderTweet(tweet, profile) {
     }
     parts.push('    </div>');
     parts.push('    <div class="tweet-content">' + content + '</div>');
-    const imageUrl = tweet.image ? String((rt.state.tweetImages || {})[tweet.image] || '') : '';
-    if (imageUrl) {
-        parts.push('    <img class="tweet-image" src="' + escapeHtml(imageUrl) + '" alt="配图">');
+    if (media) {
+        parts.push('    ' + media);
     }
     parts.push('    <div class="tweet-actions">');
     parts.push('      <span title="评论">💬 ' + escapeHtml(formatCount(stats.reply)) + '</span>');
     const retweetClass = 'tweet-action-retweet' + (tweet.retweeted ? ' is-active' : '');
     const likeClass = 'tweet-action-like' + (tweet.liked ? ' is-active' : '');
+    const bookmarkClass = 'tweet-action-bookmark' + (tweet.bookmarked ? ' is-active' : '');
     parts.push('      <span class="' + retweetClass + '" title="转发">🔄 ' + escapeHtml(formatCount(stats.retweet)) + '</span>');
     parts.push('      <span class="' + likeClass + '" title="点赞">❤️ ' + escapeHtml(formatCount(stats.like)) + '</span>');
     parts.push('      <span title="浏览">📊 ' + escapeHtml(formatCount(stats.view)) + '</span>');
+    // 🔖 刻意不带数字：书签数只在详情页的数值行里出现（主页只体现「点没点过」= 变蓝）
+    // 位置固定在 📊 之后（与编辑弹窗里的数字框顺序一致）
+    parts.push('      <span class="' + bookmarkClass + '" title="书签">🔖</span>');
+    // 🔗 纯图标，点了没有任何行为（与样例一致）
+    parts.push('      <span class="tweet-action-share" title="分享">🔗</span>');
     parts.push('    </div>');
     parts.push('  </div>');
     parts.push('</div>');
@@ -138,7 +265,12 @@ function buildStyles() {
         '* { margin: 0; padding: 0; box-sizing: border-box; }',
         // 固定高度的一屏：整页（含资料头）都不滚，只有推文列表 #tw-posts 内部滚
         'html, body { height: 100%; overflow: hidden; }',
-        'body { display: flex; flex-direction: column; font-family: var(--font-sans); background: var(--bg-primary); color: var(--text-primary); }',
+        'body { font-family: var(--font-sans); background: var(--bg-primary); color: var(--text-primary); }',
+        // 两个「页」：主页（资料头 + 列表）与推文详情。两张都在同一份文档里，谁可见由父页面切 display
+        // —— 这样「点进详情 / 返回」不重建 srcdoc（不丢列表滚动位置、也没有 reflow 闪动）。
+        '#tw-home { display: flex; flex-direction: column; height: 100%; }',
+        '#tw-detail-wrap { display: none; height: 100%; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }',
+        '.tw-detail-page { display: none; }',
         '.tw-head { flex: 0 0 auto; }',
         '.profile-banner { width: 100%; height: var(--banner-height); background-size: cover; background-position: center; }',
         '.profile-header-row { display: flex; justify-content: space-between; align-items: flex-start; padding: 0 16px; position: relative; margin-top: calc(var(--avatar-size) / -2 - 4px); margin-bottom: 8px; }',
@@ -177,16 +309,53 @@ function buildStyles() {
         '.tweet-handle, .tweet-time { color: var(--text-secondary); }',
         '.tweet-content { font-size: 15px; line-height: 1.4; word-break: break-word; white-space: pre-wrap; }',
         '.tweet-image { margin-top: 8px; border-radius: 16px; border: 1px solid var(--border); max-width: 100%; height: auto; display: block; }',
-        '.tweet-actions { display: flex; justify-content: space-between; max-width: 400px; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }',
+        // 主页卡片里的媒体只做「预览」：宽度取一半 → 面积正好是 1/4（图片 / 动图 / 视频一样，
+        // 高度都是按比例算的）。选择器带 .tweet 前缀，所以**只命中主页卡片** ——
+        // 详情页那份（.tw-detail-page 下）保持原尺寸。块级元素左对齐，与推文正文同一条左边线。
+        '.tweet .tweet-image, .tweet .tweet-video { width: 50%; }',
+        '.tweet-actions { display: flex; justify-content: space-between; max-width: 460px; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }',
         '.tweet-actions span { display: inline-flex; align-items: center; gap: 4px; }',
         '.tweet-action-like, .tweet-action-retweet { cursor: pointer; user-select: none; transition: color 0.2s; }',
         '.tweet-action-like:hover, .tweet-action-retweet:hover { color: #f91880; }',
         '.tweet-action-like.is-active, .tweet-action-retweet.is-active { color: #f91880; }',
+        // 书签：主页不带数字，只靠颜色表示「收藏了」（与样例的 .bookmarked 一致）
+        '.tweet-action-bookmark, .tweet-action-share { cursor: pointer; user-select: none; transition: color 0.2s; }',
+        '.tweet-action-bookmark:hover { color: var(--accent); }',
+        '.tweet-action-bookmark.is-active { color: var(--accent); }',
+        '.tweet-action-share:hover { color: var(--accent); }',
         '.tw-empty { padding: 32px 16px; text-align: center; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }',
         '.tweets-container::-webkit-scrollbar { width: 6px; }',
         '.tweets-container::-webkit-scrollbar-track { background: transparent; }',
         '.tweets-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }',
         '.tweets-container::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }',
+        // —— 推文详情页（第二张「页」，结构照推特网页样例 twitter_tweet.html）——
+        '.tw-top-bar { display: flex; align-items: center; gap: 16px; padding: 4px 16px; height: 53px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 10; }',
+        '.tw-back-btn { width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; color: var(--text-primary); font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-family: inherit; }',
+        '.tw-back-btn:hover { background: var(--bg-hover); }',
+        '.tw-top-bar-title { font-size: 20px; font-weight: 700; }',
+        '.tweet-main { padding: 12px 16px 4px; border-bottom: 1px solid var(--border); }',
+        '.tweet-author-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }',
+        '.tweet-avatar-lg { width: 48px; height: 48px; border-radius: 50%; background-color: var(--bg-secondary); flex-shrink: 0; overflow: hidden; }',
+        '.tweet-avatar-lg img { width: 100%; height: 100%; object-fit: cover; }',
+        '.tweet-avatar-lg-img-placeholder { width: 100%; height: 100%; background: var(--bg-secondary); }',
+        '.tweet-author-info { flex: 1; min-width: 0; }',
+        '.tweet-name-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }',
+        '.tweet-content-lg { font-size: 23px; line-height: 1.35; word-break: break-word; white-space: pre-wrap; margin-bottom: 12px; }',
+        '.tweet-meta-time { font-size: 15px; color: var(--text-secondary); padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 12px; }',
+        '.tweet-meta-time strong { color: var(--text-primary); }',
+        '.tweet-stats-row { display: flex; flex-wrap: wrap; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 14px; color: var(--text-secondary); }',
+        '.tweet-stats-row strong { color: var(--text-primary); }',
+        '.tweet-action-bar { display: flex; justify-content: space-around; padding: 4px 0; border-bottom: 1px solid var(--border); }',
+        '.tweet-action-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 15px; color: var(--text-secondary); cursor: pointer; padding: 8px 12px; border-radius: 9999px; transition: color 0.2s, background 0.2s; user-select: none; }',
+        '.tweet-action-btn:hover { background: var(--bg-hover); }',
+        '.tweet-action-bar .tweet-action-reply:hover, .tweet-action-bar .tweet-action-share:hover { color: var(--accent); }',
+        '.tweet-action-bar .tweet-action-retweet:hover, .tweet-action-bar .tweet-action-retweet.is-active { color: #00ba7c; }',
+        '.tweet-action-bar .tweet-action-like:hover, .tweet-action-bar .tweet-action-like.is-active { color: #f91880; }',
+        '.tweet-action-bar .tweet-action-bookmark:hover, .tweet-action-bar .tweet-action-bookmark.is-active { color: var(--accent); }',
+        // 视频：不 autoplay，点击后由浏览器原生控件播放（同一条时间线里只允许一个在播，由父页面接线）
+        '.tweet-video { margin-top: 8px; width: 100%; border-radius: 16px; border: 1px solid var(--border); display: block; background: #000; outline: none; }',
+        '.reply-hint { padding: 12px 0 4px; font-size: 15px; color: var(--text-secondary); }',
+        '.reply-hint .reply-handle { color: var(--accent); }',
     ].join('\n');
 }
 
@@ -235,7 +404,9 @@ function buildTwitterHtml(data) {
     parts.push('</style>');
     parts.push('</head>');
     parts.push('<body>');
-    // —— 固定不动的资料头（横幅 / 头像 / 名字 / 简介 / meta / 统计 / 标签页）——
+    // —— 第一张「页」：主页（资料头 + 推文列表）——
+    parts.push('<div id="tw-home">');
+    // 固定不动的资料头（横幅 / 头像 / 名字 / 简介 / meta / 统计 / 标签页）
     // 它不吃 flex 伸缩（flex: 0 0 auto），所以它有多高就是多高，剩下的全给推文列表。
     // 想调节「头占多少」：横幅有 --banner-height（跟着 iframe 高度走），其余的是固定行高。
     parts.push('<div class="tw-head">');
@@ -288,6 +459,14 @@ function buildTwitterHtml(data) {
         parts.push('  <div class="tw-empty">还没有推文。<br>模型在回复里写 &lt;推文&gt;正文&lt;/推文&gt; 就会出现在这里，也可以在面板上手动新增。</div>');
     }
     parts.push('  <div class="tw-empty" id="tw-empty" style="display:none"></div>');
+    parts.push('</div>');
+    parts.push('</div>');
+    // —— 第二张「页」：推文详情（每条一份，默认全隐藏）——
+    // 只有被点开的那份显示；返回键把它们全部关掉、把 #tw-home 显示回来（父页面切 display）。
+    parts.push('<div id="tw-detail-wrap">');
+    for (const tweet of tweets) {
+        parts.push(renderTweetDetail(tweet, profile));
+    }
     parts.push('</div>');
     parts.push('</body>');
     parts.push('</html>');

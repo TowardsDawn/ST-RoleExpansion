@@ -1,6 +1,7 @@
 {
     "version": 1,
     "_comment": "模块清单：框架启动时 fetch 这个文件，按顺序动态 import 每个模块的入口。删掉某一项或整个目录 = 没装这个模块。",
+    "_order": "modules[] 的顺序 = 主面板里区块的顺序（也是扩展设置面板「模块」表的顺序）。",
     "_fields": {
         "id": "模块 id（settings.modules 的键、kernel.service() 的服务名、报错里出现的名字）",
         "path": "相对本清单文件的入口路径",
@@ -8,8 +9,9 @@
         "icon": "面板区块标题前的 Font Awesome class"
     },
     "modules": [
-        { "id": "twitter", "path": "./twitter/index.js", "title": "推特", "icon": "fa-brands fa-x-twitter" },
+        { "id": "outfit", "path": "./outfit/index.js", "title": "衣装打扮", "icon": "fa-solid fa-shirt" },
+        { "id": "state", "path": "./state/index.js", "title": "角色状态栏", "icon": "fa-solid fa-heart-pulse" },
         { "id": "journal", "path": "./journal/index.js", "title": "日记", "icon": "fa-solid fa-book" },
-        { "id": "state", "path": "./state/index.js", "title": "角色状态栏", "icon": "fa-solid fa-heart-pulse" }
+        { "id": "twitter", "path": "./twitter/index.js", "title": "推特", "icon": "fa-brands fa-x-twitter" }
     ]
 }

@@ -30,6 +30,8 @@ export function createTwitterUi(kernel, rt) {
     const nextSeq = (...args) => rt.capture.nextSeq(...args);
     const persistTwitterData = (...args) => rt.store.persistTwitterData(...args);
     const makeStats = (...args) => rt.stats.makeStats(...args);
+    const mediaKindFromUrl = (...args) => rt.stats.mediaKindFromUrl(...args);
+    const normalizeMediaKind = (...args) => rt.stats.normalizeMediaKind(...args);
     const saveAvatar = (...args) => rt.store.saveAvatar(...args);
     const saveTweetImage = (...args) => rt.store.saveTweetImage(...args);
     const saveBanner = (...args) => rt.store.saveBanner(...args);
@@ -63,14 +65,20 @@ function renderStatus() {
 }
 
 /**
- * 给 iframe 里的东西接线：标签页点击、关注按钮、每条推文的 🔄 / ❤️。
+ * 给 iframe 里的东西接线：标签页、关注、点赞/转发/书签、点推文进详情、返回键、视频互斥。
  * srcdoc 里没有脚本，所以这些监听必须由父页面在每次 load 后重新挂一遍。
+ *
+ * 详情页与主页**在同一份文档里**（render.js 给每条推文预渲染一份 .tw-detail-page）：
+ * 进出详情只切 display，不重建 srcdoc —— 回主页不丢列表滚动位置，点起来也没有重载闪动。
  *
  * ⚠️ 这里**不再量高度**：iframe 是固定高度（style.css 的 .roleEx-twitter-frame），
  * 资料头固定、只有推文列表 #tw-posts 内部滚 —— 页面高度不随内容变，也就没有量不准的问题。
  * 高度自适应那条路走不通：折叠块默认收起（display: none）时 iframe 没有布局盒，
  * 那一刻量到的 scrollHeight 是 0，展开后又没有第二次机会（详见模块 DEVELOPMENT §7）。
  */
+/** 当前正打开的详情页 id（空 = 在主页）。只活在内存里：它描述的是「界面停在哪」，不进 JSONL */
+let openDetailId = '';
+
 function wireFrame() {
     const refs = panel();
     const frame = refs && refs.frame;
@@ -80,22 +88,86 @@ function wireFrame() {
     }
     const posts = doc.getElementById('tw-posts');
     const empty = doc.getElementById('tw-empty');
+    const home = doc.getElementById('tw-home');
+    const detailWrap = doc.getElementById('tw-detail-wrap');
     const labels = { replies: '回复', media: '媒体', likes: '喜欢' };
+    const cards = () => Array.from(doc.querySelectorAll('.tweet'));
+    const detailPage = (id) => doc.querySelector('.tw-detail-page[data-id="' + id + '"]');
 
     const setTab = (id) => {
         doc.querySelectorAll('.nav-tab').forEach((btn) => {
             btn.classList.toggle('active', btn.getAttribute('data-tab') === id);
         });
         const isPosts = id === 'posts';
-        // #tw-posts 是滚动容器，它本身永远在（藏了就没得滚了）；非 posts 标签只把
+        const isMedia = id === 'media';
+        // 「媒体」标签是真过滤（只留带媒体那几条）；「回复 / 喜欢」还没有数据源，只留一句提示。
+        let visible = 0;
+        for (const card of cards()) {
+            const show = isPosts || (isMedia && card.classList.contains('has-media'));
+            card.style.display = show ? '' : 'none';
+            if (show) {
+                visible += 1;
+            }
+        }
+        // #tw-posts 是滚动容器，它本身永远在（藏了就没得滚了）；非 posts 标签把
         // 它里面除 #tw-empty 之外的东西藏掉（CSS: .tweets-container.is-empty > :not(#tw-empty)）
+        const hardEmpty = !isPosts && !isMedia;
+        // 「帖子」标签永远不显示这句提示 —— 列表本来就空的时候，里面已经有一句「还没有推文」了
+        const isEmpty = hardEmpty || (isMedia && visible === 0);
         if (posts) {
-            posts.classList.toggle('is-empty', !isPosts);
+            posts.classList.toggle('is-empty', hardEmpty);
         }
         if (empty) {
-            empty.style.display = isPosts ? 'none' : 'block';
-            empty.textContent = '「' + (labels[id] || id) + '」标签下还没有内容 —— 本模块只收录纯文本推文。';
+            empty.style.display = isEmpty ? 'block' : 'none';
+            if (isEmpty) {
+                empty.textContent = isMedia
+                    ? '「媒体」标签下还没有带配图 / 视频的推文。'
+                    : '「' + (labels[id] || id) + '」标签下还没有内容。';
+            }
         }
+    };
+
+    /**
+     * 切页前把所有正在播的视频停掉。
+     * 进详情时必须停掉主页那段（画面看不见了、声音不能跟着走），返回时同理 ——
+     * 详情页的媒体与主页那份是**两个** <video> 元素（同一份数据渲染两遍），不停就会在后面继续出声。
+     */
+    const pauseAllVideos = () => {
+        doc.querySelectorAll('video').forEach((video) => {
+            if (video && typeof video.pause === 'function') {
+                video.pause();
+            }
+        });
+    };
+
+    // —— 主页 ⇄ 详情：只切 display，两张「页」都在同一份文档里 ——
+    const showDetail = (tweetId) => {
+        const page = detailPage(tweetId);
+        if (!page) {
+            return;
+        }
+        pauseAllVideos();
+        doc.querySelectorAll('.tw-detail-page').forEach((node) => { node.style.display = 'none'; });
+        page.style.display = 'block';
+        if (home) {
+            home.style.display = 'none';
+        }
+        if (detailWrap) {
+            detailWrap.style.display = 'block';
+            detailWrap.scrollTop = 0;
+        }
+        openDetailId = tweetId;
+    };
+    const closeDetail = () => {
+        pauseAllVideos();
+        doc.querySelectorAll('.tw-detail-page').forEach((node) => { node.style.display = 'none'; });
+        if (detailWrap) {
+            detailWrap.style.display = 'none';
+        }
+        if (home) {
+            home.style.display = 'flex';
+        }
+        openDetailId = '';
     };
 
     doc.querySelectorAll('.nav-tab').forEach((btn) => {
@@ -108,16 +180,58 @@ function wireFrame() {
         followButton.addEventListener('click', () => toggleTwitterFollow());
     }
 
-    // 每条推文的 🔄 / ❤️（点一下 +1 变粉，再点一下 -1 恢复）
-    doc.querySelectorAll('.tweet').forEach((card) => {
+    // 点「推文框」进详情：正文 / 头像 / 时间都算；控件与视频不算
+    // （视频要留给「点击后播放」，否则一点就把页面换走了）
+    cards().forEach((card) => {
         const tweetId = card.getAttribute('data-id');
-        card.querySelectorAll('.tweet-action-like').forEach(node => {
-            node.addEventListener('click', (event) => { event.stopPropagation(); toggleTweetAction(tweetId, 'like'); });
-        });
-        card.querySelectorAll('.tweet-action-retweet').forEach(node => {
-            node.addEventListener('click', (event) => { event.stopPropagation(); toggleTweetAction(tweetId, 'retweet'); });
+        if (!tweetId) {
+            return;
+        }
+        card.addEventListener('click', (event) => {
+            const target = event.target;
+            if (target && target.closest && (target.closest('.tweet-actions') || target.closest('video'))) {
+                return;
+            }
+            showDetail(tweetId);
         });
     });
+
+    // 返回键（详情页左上角那个 ←）
+    doc.querySelectorAll('.tw-back-btn').forEach((btn) => {
+        btn.addEventListener('click', () => closeDetail());
+    });
+
+    // ❤️ / 🔄 / 🔖：主页卡片与详情页共用同一批监听（点一下 +1 变 active，再点一下 -1 恢复）
+    doc.querySelectorAll('.tweet-action-like, .tweet-action-retweet, .tweet-action-bookmark').forEach((node) => {
+        const kind = node.classList.contains('tweet-action-like') ? 'like'
+            : (node.classList.contains('tweet-action-retweet') ? 'retweet' : 'bookmark');
+        node.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const host = node.closest ? node.closest('.tweet[data-id], .tw-detail-page[data-id]') : null;
+            const tweetId = host && host.getAttribute('data-id');
+            if (tweetId) {
+                toggleTweetAction(tweetId, kind);
+            }
+        });
+    });
+    // 🔗 分享：纯图标，刻意不接任何行为（与样例一致）
+
+    // 视频互斥：同一条时间线里只允许一个在播（样例里那段 document 级 play 监听，改由父页面挂）
+    const videos = Array.from(doc.querySelectorAll('video'));
+    videos.forEach((video) => {
+        video.addEventListener('play', () => {
+            videos.forEach((other) => {
+                if (other !== video) {
+                    other.pause();
+                }
+            });
+        });
+    });
+
+    // 重建 srcdoc（改了数据）之后回到刚才那条推文的详情页，别把用户踢回列表
+    if (openDetailId && detailPage(openDetailId)) {
+        showDetail(openDetailId);
+    }
 }
 
 /** 重建 iframe 的 srcdoc（数据没变也可以安全重复调用） */
@@ -137,6 +251,14 @@ function renderFrame() {
 }
 
 /** 推文管理列表：置顶 / 编辑 / 删除 */
+/** 管理列表里那条推文前面的媒体标记（URL 媒体 / 本地配图 / 没有） */
+function mediaMark(tweet) {
+    if (tweet.mediaUrl) {
+        return normalizeMediaKind(tweet.mediaKind, tweet.mediaUrl) === 'video' ? '🎬 ' : '🖼 ';
+    }
+    return tweet.image ? '📷 ' : '';
+}
+
 function renderManage() {
     const refs = panel();
     if (!refs || !refs.list) {
@@ -160,12 +282,13 @@ function renderManage() {
                 el('span', { class: 'roleEx-twitter-row-time', text: tweet.time || '(无时间)' }),
                 el('span', {
                     class: 'roleEx-twitter-row-preview',
-                    text: (tweet.image ? '📷 ' : '') + textPreview(tweet.content, 60),
+                    text: mediaMark(tweet) + textPreview(tweet.content, 60),
                 }),
                 el('span', {
                     class: 'roleEx-hint',
                     text: '💬 ' + formatCount(stats.reply) + '  🔄 ' + formatCount(stats.retweet)
-                        + '  ❤️ ' + formatCount(stats.like) + '  📊 ' + formatCount(stats.view),
+                        + '  ❤️ ' + formatCount(stats.like) + '  📊 ' + formatCount(stats.view)
+                        + '  🔖 ' + formatCount(stats.bookmark),
                 }),
             ]),
             el('div', { class: 'roleEx-entry-actions' }, [
@@ -405,7 +528,8 @@ function openTweetEditor(target) {
     };
     const statsHint = el('div', {
         class: 'roleEx-hint',
-        text: '四个数字在保存时若留空会按规则随机生成；JSONL 里存的是整数，`1.6K` 只是显示写法。',
+        text: '五个数字在保存时若留空会按规则随机生成；JSONL 里存的是整数，`1.6K` 只是显示写法。'
+            + '书签数在主页不显示，只在推文详情的数值行里出现。',
     });
 
     // 配图：新选的图先放在内存里，保存时才写文件（新增也要等推文 id 出来）
@@ -444,9 +568,53 @@ function openTweetEditor(target) {
     ]);
     renderImageState();
 
+    // —— URL 媒体（视频 / 动图 / 静态图）：只把地址存进 JSONL，**不落角色目录** ——
+    // 取舍：**URL 优先** —— 两者都在时渲染 URL 那张（本地配图仍原样留在 JSONL 与磁盘上）。
+    const mediaUrlInput = el('input', { class: 'text_pole', type: 'text', placeholder: '如 http://…/x.mp4（可留空）' });
+    const mediaKindSelect = el('select', { class: 'text_pole roleEx-num' }, [
+        el('option', { value: 'auto', text: '自动（按后缀）' }),
+        el('option', { value: 'image', text: '图片 / 动图' }),
+        el('option', { value: 'video', text: '视频' }),
+    ]);
+    const mediaState = el('span', { class: 'roleEx-hint' });
+    const readMediaUrl = () => {
+        const raw = mediaUrlInput.value.trim();
+        return /^https?:\/\/[^\s]+$/i.test(raw) ? raw : '';
+    };
+    const readMediaKind = () => (mediaKindSelect.value === 'auto' ? '' : mediaKindSelect.value);
+    const renderMediaState = () => {
+        const raw = mediaUrlInput.value.trim();
+        if (!raw) {
+            mediaState.textContent = '没有 URL 媒体；本地配图照旧走角色目录';
+            return;
+        }
+        if (!readMediaUrl()) {
+            mediaState.textContent = '只认 http(s) 地址 —— 这个会被忽略';
+            return;
+        }
+        const kind = normalizeMediaKind(readMediaKind(), raw);
+        mediaState.textContent = kind === 'video'
+            ? '按视频渲染（<video controls>，点击后播放）'
+            : '按图片渲染（<img>：GIF / APNG 会自动动）';
+    };
+    mediaUrlInput.addEventListener('input', renderMediaState);
+    mediaKindSelect.addEventListener('change', renderMediaState);
+    const mediaRow = el('div', { class: 'roleEx-row roleEx-wrap' }, [
+        el('span', { class: 'roleEx-hint roleEx-inline-label', text: '媒体 URL' }),
+        mediaUrlInput,
+        mediaKindSelect,
+        mediaState,
+    ]);
+
     timeInput.value = isNew ? '' : String(target.time || '');
     seqInput.value = String(isNew ? nextSeq() : (target.seq || 1));
     contentArea.value = isNew ? '' : String(target.content || '');
+    mediaUrlInput.value = isNew ? '' : String(target.mediaUrl || '');
+    // 存的类型与「按后缀猜出来的」一样就显示成「自动」—— 这样以后改了 URL 会跟着重新判
+    const storedUrl = isNew ? '' : String(target.mediaUrl || '');
+    const storedKind = isNew ? '' : String(target.mediaKind || '');
+    mediaKindSelect.value = storedUrl && storedKind && storedKind !== mediaKindFromUrl(storedUrl) ? storedKind : 'auto';
+    renderMediaState();
 
     const modal = el('div', { class: 'roleEx-modal' }, [
         el('div', { class: 'roleEx-modal-inner' }, [
@@ -462,11 +630,13 @@ function openTweetEditor(target) {
             ]),
             contentArea,
             imageRow,
+            mediaRow,
             el('div', { class: 'roleEx-row roleEx-wrap' }, [
                 statField('💬 评论', 'reply', statSeed.reply),
                 statField('🔄 转发', 'retweet', statSeed.retweet),
                 statField('❤️ 点赞', 'like', statSeed.like),
                 statField('📊 浏览', 'view', statSeed.view),
+                statField('🔖 书签', 'bookmark', statSeed.bookmark),
             ]),
             statsHint,
             el('div', { class: 'roleEx-row roleEx-end' }, [
@@ -497,7 +667,13 @@ function openTweetEditor(target) {
             const value = num(key);
             return value === null ? Math.max(0, Math.round(Number(seeded[key]) || 0)) : value;
         };
-        return { reply: pick('reply'), retweet: pick('retweet'), like: pick('like'), view: pick('view') };
+        return {
+            reply: pick('reply'),
+            retweet: pick('retweet'),
+            like: pick('like'),
+            bookmark: pick('bookmark'),
+            view: pick('view'),
+        };
     };
 
     async function saveEditor() {
@@ -512,8 +688,16 @@ function openTweetEditor(target) {
 
         const stats = readStats();
 
+        // URL 媒体：只认 http(s)（store 读回来时也会再过一遍，这里提前提示免得白存）
+        const mediaUrlRaw = mediaUrlInput.value.trim();
+        const mediaUrl = readMediaUrl();
+        if (mediaUrlRaw && !mediaUrl) {
+            toast('warning', '媒体 URL 只认 http(s) 地址，已忽略：' + mediaUrlRaw);
+        }
+        const mediaKind = mediaUrl ? normalizeMediaKind(readMediaKind(), mediaUrl) : '';
+
         if (isNew) {
-            const res = await addTweet({ time, content: body, seq, stats });
+            const res = await addTweet({ time, content: body, seq, stats, mediaUrl, mediaKind });
             if (!res.ok) {
                 toast('error', assetReasonText(res.reason));
                 return;
@@ -543,6 +727,9 @@ function openTweetEditor(target) {
         target2.content = body;
         target2.seq = seq;
         target2.stats = stats;
+        // URL 媒体与本地配图**共存**，只是渲染时 URL 优先（清空 URL 就会自动回到本地那张）
+        target2.mediaUrl = mediaUrl;
+        target2.mediaKind = mediaKind;
         target2.updatedAt = Date.now();
 
         // 配图：先改文件与字段，再和上面这些一起落盘（只写一次 jsonl）
@@ -595,13 +782,21 @@ async function togglePin(id) {
     renderTwitter();
 }
 
+/** kind → JSONL 里的「点过没有」字段 */
+const ACTION_FLAGS = { like: 'liked', retweet: 'retweeted', bookmark: 'bookmarked' };
+
+/** kind → 主页卡片上图标后面的数字（书签刻意没有：主页不显示书签数） */
+const ACTION_ICONS = { like: '❤️', retweet: '🔄', bookmark: '🔖' };
+
 /**
- * 🔄 / ❤️：点一下数值 +1 并变粉，再点一下 -1 恢复 —— 两个字段（`retweeted` / `liked`）与数值都落盘。
- * 写盘失败就把内存改回去（否则界面与磁盘会不一致）。
+ * ❤️ / 🔄 / 🔖：点一下数值 +1 并变 active，再点一下 -1 恢复 —— 字段（`liked` / `retweeted` /
+ * `bookmarked`）与数值都落盘。写盘失败就把内存改回去（否则界面与磁盘会不一致）。
  */
 async function toggleTweetAction(tweetId, kind) {
-    const isLike = kind === 'like';
-    const flagKey = isLike ? 'liked' : 'retweeted';
+    const flagKey = ACTION_FLAGS[kind];
+    if (!flagKey) {
+        return { ok: false, reason: 'bad-kind' };
+    }
     const tweet = rt.state.tweets.find(t => t.id === tweetId);
     if (!tweet) {
         return { ok: false, reason: 'not-found' };
@@ -658,8 +853,12 @@ async function toggleTwitterFollow() {
 }
 
 /**
- * 就地更新 iframe 里那条推文的 🔄 / ❤️：只改一个 textContent + 一个 class，**不重建 srcdoc**。
+ * 就地更新 iframe 里那条推文（主页卡片 + 详情页两处）：只改 textContent / class，**不重建 srcdoc**。
  * 重建会让 iframe 整个重载一次，点起来就不像样例那样无感了。
+ *
+ * 两处的写法不同（这就是要看两遍的原因）：
+ *   主页卡片  数字跟在图标后面（书签例外 —— 主页不显示书签数）
+ *   详情页    控件旁边只有图标，数字在 .tweet-stats-row 那行的 <strong> 里
  */
 function patchActionNode(tweetId, kind) {
     const refs = panel();
@@ -668,17 +867,28 @@ function patchActionNode(tweetId, kind) {
     if (!doc || !tweet) {
         return;
     }
+    const icon = ACTION_ICONS[kind] || '';
+    const active = tweet[ACTION_FLAGS[kind]] === true;
+    const count = formatCount(tweet.stats && tweet.stats[kind]);
+
     const card = doc.querySelector('.tweet[data-id="' + tweetId + '"]');
-    if (!card) {
-        return;
+    const cardNode = card ? card.querySelector('.tweet-action-' + kind) : null;
+    if (cardNode) {
+        cardNode.textContent = kind === 'bookmark' ? icon : icon + ' ' + count;
+        cardNode.classList.toggle('is-active', active);
     }
-    const isLike = kind === 'like';
-    const node = card.querySelector(isLike ? '.tweet-action-like' : '.tweet-action-retweet');
-    if (!node) {
-        return;
+
+    const page = doc.querySelector('.tw-detail-page[data-id="' + tweetId + '"]');
+    if (page) {
+        const pageNode = page.querySelector('.tweet-action-' + kind);
+        if (pageNode) {
+            pageNode.classList.toggle('is-active', active);
+        }
+        const stat = page.querySelector('.tweet-stat[data-stat="' + kind + '"] strong');
+        if (stat) {
+            stat.textContent = count;
+        }
     }
-    node.textContent = (isLike ? '❤️ ' : '🔄 ') + formatCount(tweet.stats && tweet.stats[kind]);
-    node.classList.toggle('is-active', tweet[isLike ? 'liked' : 'retweeted'] === true);
 }
 
 /** 就地更新关注按钮与粉丝数（同样不重建 srcdoc） */

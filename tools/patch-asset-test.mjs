@@ -119,6 +119,25 @@ check('delete 删掉文件', d1.status === 200 && d1.data.removed === true && !f
 const d2 = await post('/asset/delete', withAvatar({ name: 'avatar.png' }));
 check('再删一次 → removed:false（不报错）', d2.status === 200 && d2.data.removed === false);
 
+// 衣装模块（modules/outfit）走的是同一条通道，只是换一个白名单子目录：
+// save → get 逐字一致 → 覆盖写 → delete → get 返回 exists:false
+const OUTFIT_DIR = path.join(CHAR_DIR, '_RoleExpansion', 'outfit');
+const OUTFIT_JSONL = 'RoleExpansion_outfit_c_1a2b3c4d_j_5e6f7a8b.jsonl';
+const withOutfit = (body) => Object.assign({ avatar_url: CHAR + '.png', sub: 'outfit' }, body);
+const outfitBody = '{"__roleExpansion":"outfit"}\n{"__roleExpansion":"outfit","content":"第一条"}\n';
+const os1 = await post('/asset/save', withOutfit({ name: OUTFIT_JSONL, text: outfitBody }));
+check('outfit save 文本成功', os1.status === 200 && os1.data.ok === true, JSON.stringify(os1.data));
+check('outfit 落点 = _RoleExpansion/outfit/<名>', fs.existsSync(path.join(OUTFIT_DIR, OUTFIT_JSONL)));
+check('outfit 文本逐字一致', fs.readFileSync(path.join(OUTFIT_DIR, OUTFIT_JSONL), 'utf8') === outfitBody);
+const og1 = await post('/asset/get', withOutfit({ name: OUTFIT_JSONL }));
+check('outfit get 文本回读一致', og1.status === 200 && og1.data.exists === true && og1.data.text === outfitBody);
+const outfitBody2 = '{"__roleExpansion":"outfit"}\n{"__roleExpansion":"outfit","content":"改写后"}\n';
+const os2 = await post('/asset/save', withOutfit({ name: OUTFIT_JSONL, text: outfitBody2 }));
+check('outfit 覆盖写成功', os2.status === 200 && fs.readFileSync(path.join(OUTFIT_DIR, OUTFIT_JSONL), 'utf8') === outfitBody2);
+const od1 = await post('/asset/delete', withOutfit({ name: OUTFIT_JSONL }));
+const og2 = await post('/asset/get', withOutfit({ name: OUTFIT_JSONL }));
+check('outfit delete → get 返回 exists:false', od1.status === 200 && od1.data.removed === true && og2.status === 200 && og2.data.exists === false);
+
 const bad = [
     ['sub 不在白名单（journals）', { sub: 'journals', name: 'a.jsonl', text: 'x' }],
     ['sub 里带 ..', { sub: 'twitter' + BS + '..', name: 'a.jsonl', text: 'x' }],

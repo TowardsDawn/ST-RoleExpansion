@@ -41,7 +41,7 @@ function nextSeq() {
 }
 
 /** 造一条推文（统计数字在这里随机生成，之后不再变） */
-function makeTweet({ time = '', content = '', seq = null, sourceMessageIds = [], stats = null }) {
+function makeTweet({ time = '', content = '', seq = null, sourceMessageIds = [], stats = null, mediaUrl = '', mediaKind = '' }) {
     const now = Date.now();
     const hasSeq = seq !== null && seq !== undefined && seq !== '' && Number.isFinite(Number(seq));
     const next = nextSeq();
@@ -51,6 +51,8 @@ function makeTweet({ time = '', content = '', seq = null, sourceMessageIds = [],
         content: String(content ?? '').trim(),
         seq: hasSeq ? Math.round(Number(seq)) : next,
         pinned: false,
+        mediaUrl: String(mediaUrl ?? ''),                 // URL 媒体（面板手填；模型标签里没有）
+        mediaKind: String(mediaKind ?? ''),
         stats: stats || makeStats(),
         createdAt: now,
         updatedAt: now,

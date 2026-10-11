@@ -9,11 +9,14 @@
 
 ```
 index.js   描述符（id / title / icon / defaults）+ 组装 rt + 唯一的对外钩子 buildPanelSection()
-stats.js   四个数字：randomInt / makeStats（创建时随机一次）/ formatCount（K / M 显示）
+stats.js   五个数字：randomInt / makeStats（创建时随机一次）/ formatCount（K / M 显示）
+           + mediaKindFromUrl / normalizeMediaKind（URL 算图片还是视频的唯一判据）
 store.js   会话身份与文件名、jsonl 编解码、资源通道读写、头像 / 横幅 base64 ↔ data URL
 capture.js 标签契约解析与剥离、nextSeq / makeTweet / addTweet、MESSAGE_RECEIVED 入口
 render.js  buildTwitterHtml()：把资料 + 推文渲染成一份自包含的 srcdoc（纯字符串拼接；escapeHtml + cssUrl 净化）
-ui.js      主面板区块、iframe 接线（标签 / 关注 / 🔄 / ❤️）、资料区、推文管理、编辑器弹窗、解析设置
+           里面是**两张「页」**：#tw-home（资料头 + 列表）与 #tw-detail-wrap（每条推文一份详情，默认隐藏）
+ui.js      主面板区块、iframe 接线（标签 / 关注 / 🔄 / ❤️ / 🔖、点推文进详情、返回、视频互斥）、
+           资料区、推文管理、编辑器弹窗、解析设置
 ```
 
 | 文件 | 边界（不做什么） |
@@ -54,7 +57,8 @@ export default {
 };
 ```
 
-`modules/manifest.json` 里 twitter 是 `modules[]` 的**第一条**，所以主面板里这一块排在最上面。
+`modules/manifest.json` 里 twitter 是 `modules[]` 的**最后一条**，所以主面板里这一块排在最下面
+（它带 `roleEx-span-all`，独占最后一行；上面两块按清单顺序两列并排）。
 
 | 键 | 默认 | 面板 UI | 谁读它 |
 | --- | --- | --- | --- |
@@ -108,7 +112,7 @@ return {
 - `buildPanelSection()` 是**唯一的面板钩子**：框架 `activeModules()` 筛出有它的模块，把 root `append` 进 `#roleEx-scroll`。
 - **没有 `settingsBlock(kernel)`** → 酒馆「扩展」设置面板里**没有**推特区块（模块表里能看到它装没装 / 启没启用）。
 - **没有 `services`** → 别的模块拿不到它的东西；`kernel.service('twitter')` 是 `undefined`。
-- **没有 `debug`**（框架那侧也没有读 `debug` 的代码）。
+- **没有 `debug`**（**预留能力，框架目前不读**；控制台入口走框架的 `roleExpansion`）。
 - 五个工厂平铺后没有重名；加新名字前先确认框架的转发壳与 `globalThis.roleExpansion` 里没有同名的。
 
 ### 1.5 框架 ↔ 模块的桥接
@@ -326,9 +330,25 @@ fileName = 'RoleExpansion_twitter' + '_c_' + charKey + '_j_' + chatKey + '.jsonl
   读不到 `base64` 就返回 `''`（**不当作错误**，页面退化成占位圆 / 默认渐变）。
 - 上传前在 `ui.js` 用 canvas 缩图：头像 `200×200` / `image/png`，横幅 `600×200` / `image/jpeg` 质量 `0.85`。
 
+### 5.5 URL 媒体（不走资产通道）
+
+推文行另有两个字段描述「URL 媒体」：`mediaUrl`（http(s) 地址）与 `mediaKind`（`video` / `image`，空 = 按后缀猜）。
+**它们不产生任何文件、也不碰 `rt.state.tweetImages`**，渲染时由 `render.js` 的 `mediaOf()` 直接拼进 `src`：
+
+| 函数 | 位置 | 行为 |
+| --- | --- | --- |
+| `normalizeMediaUrl(value)` | `store.js` | 只放行 `^https?://…`，其余（含 `javascript:` / `data:` / 相对路径）一律清成空串 |
+| `mediaKindFromUrl(url)` | `stats.js` | 去 query / hash 后取后缀：`mp4 / webm / mov / m4v / ogv` → `video`，其余 → `image` |
+| `normalizeMediaKind(value, url)` | `stats.js` | 显式写了 `video` / `image` 就用它，否则回落到 `mediaKindFromUrl` |
+| `mediaOf(tweet)` | `render.js` | **URL 优先**：有 `mediaUrl` 就返回它，否则回落到本地 `image` + 缓存里的 data URL |
+
+- **URL 优先是刻意的**（两者都在时渲染 URL 那张）；清掉 `mediaUrl` 会自动回到本地配图，本地文件与字段都不动。
+- `mediaKind` 只在有 `mediaUrl` 时有意义：没有 URL 时存空串（`normalizeTweet()` 就是这么写的）。
+- 编辑器把「存下的类型 == 按后缀猜出来的类型」显示成「自动」，这样以后改了 URL 会跟着重新判。
+
 ---
 
-## 6. 四个数字（`stats.js`）
+## 6. 五个数字与媒体类型（`stats.js`）
 
 ```js
 function randomInt(min, max) { /* [min, max] 闭区间整数 */ }
@@ -344,8 +364,16 @@ function makeStats() {
 - 只在 `makeTweet()` 里调用一次 —— 所以「编辑推文」不会重掷；只有新增 / 捕获会掷。
 - `formatCount(value)` 分段：`<1000` 原样；`<10000` 一位小数 K（`.0` 去掉）；`<1000000` 取整 K；其余一位小数 M（`.0` 去掉）。
   例：`999` → `999`、`1234` → `1.2K`、`32400` → `32K`、`1500000` → `1.5M`。
-- **UI 里刻意不给编辑入口**（面板提示与编辑器弹窗的 `statsHint` 都指向手改 JSONL）：
-  数字是「既有事实」，改它只能改文件后 `刷新`。
+- 书签的规则比转帖再低一档（喜欢 × 1% ~ 6%），且**只在详情页的数值行里显示** —— 主页那个 `🔖` 不带数字。
+- `mediaKindFromUrl(url)` / `normalizeMediaKind(value, url)`：**「URL 算图片还是视频」的唯一判据** ——
+  后缀命中 `mp4 / webm / mov / m4v / ogv` 才是视频，其余（含认不出后缀）都算图片；
+  JSONL 里 `mediaKind` 显式写了 `video` / `image` 就以它为准（无后缀的流式地址用得上）。
+  刻意**不认 flv**：浏览器原生播不了 `video/x-flv`，而 srcdoc 里不给脚本、仓库也没有依赖。
+- **五个数字在 UI 里能改**：`新增推文` / `编辑` 弹窗里有 评论 / 转帖 / 喜欢 / 书签 / 浏览 五个数字框，
+  `readStats()` 的取值规则是「留空 → 用 seed（新增 = 刚掷的 `makeStats()`、编辑 = 原值），填了就用填的」；
+  弹窗里那行 `statsHint` 说的正是「留空会按规则随机生成 + JSONL 里存的是整数」。
+  另外主页与详情页上点 `🔄` / `❤️` / `🔖` 会在这份数字上 ±1（见 §7 的交互），也可以手改 JSONL 后 `刷新`。
+  唯一的例外是没有**范围**校验：`Math.max(0, …)` 只把负数夹到 0，其余照收。
 
 ---
 
@@ -380,11 +408,38 @@ const bannerStyle = banner
 
 ```
 iframe 固定高度（style.css: .roleEx-twitter-frame { height: clamp(520px, calc(100vh - 80px), 1000px) }）
-└─ body { display: flex; flex-direction: column }        ← srcdoc 里
-   ├─ .tw-head { flex: 0 0 auto }                        横幅 / 头像 / 名字 / 简介 / meta / 统计 / 标签页，钉住不动
-   └─ #tw-posts.tweets-container { flex: 1 1 auto; min-height: 0; overflow-y: auto }
-                                                          ← **唯一的滚动容器**，只滚推文
+└─ body                                                 ← srcdoc 里（body 自身不再 flex）
+   ├─ #tw-home { display: flex; flex-direction: column; height: 100% }     ← 第一张「页」
+   │  ├─ .tw-head { flex: 0 0 auto }                     横幅 / 头像 / 名字 / 简介 / meta / 统计 / 标签页，钉住不动
+   │  └─ #tw-posts.tweets-container { flex: 1 1 auto; min-height: 0; overflow-y: auto }
+   │                                                      ← **唯一的滚动容器**，只滚推文
+   └─ #tw-detail-wrap { display: none; height: 100%; overflow-y: auto }    ← 第二张「页」
+      └─ .tw-detail-page × N（默认 .tw-detail-page { display: none }，点开的那份才 block）
 ```
+
+**两张「页」预渲染在同一份文档里，进出详情只切 display**（`ui.wireFrame()` 里的 `showDetail()` / `closeDetail()`）：
+点击 → 主页隐藏、`#tw-detail-wrap` 显示、对应那份 `.tw-detail-page` 设为 block；返回 → 反过来。
+**不重建 srcdoc**，所以回主页时 `#tw-posts` 的滚动位置还在原处，也不会闪一下。
+
+- 代价是 DOM 约翻倍（每条推文的详情页重复一遍头像 / 正文 / 媒体）。几十条推文的量级无所谓；
+  真在意体积就退化成「只渲染一份详情页 + 重建 srcdoc + 记住并恢复 scrollTop」。
+- 「当前打开哪条」存在 `ui.js` 闭包的 `openDetailId`（**只活在内存里**，不进 JSONL —— 它描述的是「界面停在哪」）。
+  整页重画（新增 / 编辑 / 删除触发）之后 `wireFrame()` 会用这个值把详情页重新打开。
+- 主页卡片与详情页共用 `data-id`，所以 `patchActionNode()` 一次能把两处一起刷新（数字 / `.is-active`）。
+
+**点击范围**：`.tweet` 上挂了 click，但 `event.target.closest('.tweet-actions')` 或 `closest('video')` 时**不跳转** ——
+点赞那一行与视频必须留给它们自己的交互（视频要能点击播放）。
+
+**切页停视频**：`pauseAllVideos()` 在 `showDetail()` / `closeDetail()` 里各调一次 —— 主页与详情页的媒体是**两个**
+`<video>` 元素（同一份数据渲染两遍），切页不暂停就会出现「画面没了、声音还在」。
+**媒体尺寸**：主页卡片里的媒体只做预览 —— `.tweet .tweet-image, .tweet .tweet-video { width: 50% }`
+（宽度一半 → 面积 1/4；图片 / 动图 / 视频都一样，因为高度都是按比例算的）。选择器带 `.tweet` 前缀，
+所以**只命中主页卡片**；详情页那份（`.tw-detail-page` 下）仍是 `.tweet-image { max-width: 100% }` / `.tweet-video { width: 100% }` 的原尺寸。
+自测里有两条断言守着它：这条带前缀的 50% 规则在，且基础 `.tweet-image` 规则里没有 `width` 覆盖。
+
+**视频互斥**：`<video controls preload="metadata">`，**没有 autoplay**（要求是「点击后播放」）；
+父页面在每次 load 后给每个 video 挂一个 `play` 监听，把同文档里其它视频 `pause()` ——
+样例里那段 document 级监听改由父页面实现（srcdoc 里没有脚本）。
 
 - 父页面**完全不写** `style.height`，也没有 `measureFrame` / `ResizeObserver` 了：页面高度不随内容变，
   就没有「量不到 / 量晚了 / 量歪了」这一整类问题。
@@ -436,15 +491,19 @@ iframe 固定高度（style.css: .roleEx-twitter-frame { height: clamp(520px, ca
 doc.querySelectorAll('.nav-tab').forEach(btn => btn.addEventListener('click', () => setTab(btn.getAttribute('data-tab'))));
 const follow = doc.getElementById('tw-follow');
 follow?.addEventListener('click', () => toggleTwitterFollow());
-doc.querySelectorAll('.tweet').forEach(card => {
-    card.querySelectorAll('.tweet-action-like').forEach(n => n.addEventListener('click', () => toggleTweetAction(card.getAttribute('data-id'), 'like')));
-    card.querySelectorAll('.tweet-action-retweet').forEach(n => n.addEventListener('click', () => toggleTweetAction(card.getAttribute('data-id'), 'retweet')));
+// 卡片：点框进详情（控件区 / 视频不算），两处（主页 + 详情）共用的三个按钮各挂一个 click
+doc.querySelectorAll('.tweet').forEach(card => card.addEventListener('click', onCardClick));
+doc.querySelectorAll('.tweet-action-like, .tweet-action-retweet, .tweet-action-bookmark').forEach(node => {
+    node.addEventListener('click', event => { event.stopPropagation(); toggleTweetAction(hostIdOf(node), kindOf(node)); });
 });
+doc.querySelectorAll('.tw-back-btn').forEach(btn => btn.addEventListener('click', () => closeDetail()));
+doc.querySelectorAll('video').forEach(video => video.addEventListener('play', () => pauseOtherVideos(video)));
 ```
 
-`setTab(id)`：切 `.nav-tab.active`；非 `posts` 时给滚动容器 `#tw-posts` 加 `is-empty`、把 `#tw-empty` 显示出来并写
-`「X」标签下还没有内容 —— 本模块只收录纯文本推文。`。**不能把 `#tw-posts` 本身藏掉**（藏了就没得滚了），
-所以「藏卡片」交给 CSS：`.tweets-container.is-empty > :not(#tw-empty) { display: none }`。
+`setTab(id)`：切 `.nav-tab.active`；`posts` 显示全部卡片、`media` **只显示 `has-media` 的卡片**（逐张写 `style.display`），
+`replies` / `likes` 给滚动容器 `#tw-posts` 加 `is-empty` 并把 `#tw-empty` 显示出来、写 `「X」标签下还没有内容。`。
+**不能把 `#tw-posts` 本身藏掉**（藏了就没得滚了），所以「藏卡片」交给 CSS：`.tweets-container.is-empty > :not(#tw-empty) { display: none }`。
+`posts` 标签**永远不写那句提示** —— 列表本来就空时，里面已经有一句「还没有推文」了。
 
 **重建而不是增量更新**：`renderFrame()` 每次都把整份 `srcdoc` 换掉（`buildTwitterHtml()` 是纯函数），
 所以「资料改了 / 推文加了 / 置顶变了 / 删除了」都不需要单独写 patch 逻辑，也不会漏状态。
@@ -546,10 +605,10 @@ buildTwitterPanel() → section('推特', { open: false })
 | 8 | 控制台改了数据，界面不动 | 框架的 `renderTwitter` 壳**没有任何调用点** | 自己调 `roleExpansion.renderTwitter()`；要自动化就在框架里加调用点 |
 | 9 | 点关注 / 🔄 / ❤️ 后「界面变了、文件没变」 | 这类交互天生是「先改内存再落盘」 | 三个处理函数一律：改内存 → `persistTwitterData()` → 失败就回滚内存 + 错误 Toast，只有成功才动 DOM |
 | 10 | 点一下能看见**刷新动画**（iframe 重载一次） | 早期实现：点完调 `renderTwitter()` 整帧重画 | 三个交互改成就地 patch，**不碰 `srcdoc`**（现在高度也与内容脱钩，重建 srcdoc 不会再伴随高度跳变） |
-| 9 | 面板重建后操作打在旧节点上 | DOM 引用被留在工厂作用域里 | 引用统一放 `rt.state.panel`，`panel()` 每次现取 |
-| 10 | 想「顺手」直接 `fetch` 端点或 import 酒馆内部模块 | 会让缺补丁 / 版本变化变成静默失败 | 一律走 `kernel` 的资源通道；自测断言模块源码里没有 `fetch(` / `<script` |
-| 11 | 上传横幅后顶部横幅整块坏掉 / 样式失效 | 横幅是内联 `style` 里的 `url(…)`：data URL 里的括号让裸 `url()` 非法，`"` 又会把 `style="…"` 截断 | `url('…')` 带小写单引号 + 先 `cssUrl()` 百分号编码 `' " ( )` 与空白 + `escapeHtml()` 兜底（§7） |
-| 12 | **展开后仿推特页面只有 240px 高**：第一张配图很高时下面的推文再也看不到，连滚动条都没有 | 折叠块默认收起（`display: none`）→ `load` 那一刻 iframe 没有布局盒、量到 0 被 `if (height > 0)` 跳过，高度永远停在占位值；再叠加 `scrolling="no"` 与 srcdoc 里的 `overflow: hidden`，内容彻底够不到 | 不再量高度：**固定高度 + 资料头固定 + 只滚 `#tw-posts`**（§7）。量高度那条路在 `0.7.2` 用 `body` rect + 双 `ResizeObserver` 补过，`0.8.0` 整个删掉 |
+| 11 | 面板重建后操作打在旧节点上 | DOM 引用被留在工厂作用域里 | 引用统一放 `rt.state.panel`，`panel()` 每次现取 |
+| 12 | 想「顺手」直接 `fetch` 端点或 import 酒馆内部模块 | 会让缺补丁 / 版本变化变成静默失败 | 一律走 `kernel` 的资源通道；自测断言模块源码里没有 `fetch(` / `<script` |
+| 13 | 上传横幅后顶部横幅整块坏掉 / 样式失效 | 横幅是内联 `style` 里的 `url(…)`：data URL 里的括号让裸 `url()` 非法，`"` 又会把 `style="…"` 截断 | `url('…')` 带小写单引号 + 先 `cssUrl()` 百分号编码 `' " ( )` 与空白 + `escapeHtml()` 兜底（§7） |
+| 14 | **展开后仿推特页面只有 240px 高**：第一张配图很高时下面的推文再也看不到，连滚动条都没有 | 折叠块默认收起（`display: none`）→ `load` 那一刻 iframe 没有布局盒、量到 0 被 `if (height > 0)` 跳过，高度永远停在占位值；再叠加 `scrolling="no"` 与 srcdoc 里的 `overflow: hidden`，内容彻底够不到 | 不再量高度：**固定高度 + 资料头固定 + 只滚 `#tw-posts`**（§7）。量高度那条路在 `0.7.2` 用 `body` rect + 双 `ResizeObserver` 补过，`0.8.0` 整个删掉 |
 
 另外两条与写盘有关的：
 
@@ -600,12 +659,14 @@ buildTwitterPanel() → section('推特', { open: false })
 | 群聊 | 捕获直接 `return`（`ctx().groupId`），资源通道在本地判 `group` → 面板红字、连请求都不发 |
 | 消息范围 | 只解析**最后一条**消息；历史消息里的标签不会再被处理，也没有「重扫历史」的入口 |
 | 时间字段 | 纯显示文本，不解析、不比较、不参与排序 |
-| 推文类型 | 只有「帖子」一类；`回复 / 媒体 / 喜欢` 三个标签页恒定显示「还没有内容」 |
-| 四个数字 | 创建时随机一次（弹窗预填的就是这份初值）；之后可在弹窗里改、在主页上点 🔄❤️ ±1、或手改 JSONL 后 `刷新`；没有范围校验 |
+| 推文类型 | 只有「帖子」一类；`媒体` 标签会**真过滤**（只列带媒体的推文），`回复 / 喜欢` 恒定显示「还没有内容」 |
+| 五个数字 | 创建时随机一次（弹窗预填的就是这份初值）；之后可在弹窗里改、在主页 / 详情页点 🔄❤️🔖 ±1、或手改 JSONL 后 `刷新`；没有范围校验 |
+| 媒体 | 本地配图走资产通道（`tweet-<推文id>.<ext>`，一条一张）；URL 媒体只在 JSONL 里存 `mediaUrl` + `mediaKind`，**不落盘**，渲染时 **URL 优先** |
+| 详情页 | 每条推文预渲染一份（同文档第二张「页」），进出只切 `display`；`openDetailId` 只活在 `ui.js` 闭包里 |
 | 关注按钮 | 会改 `followers`（±1）并落 `followed` —— 这是刻意的（与样例推特的 `toggleFollow` 一致），不是 bug |
 | 图片 | 头像 / 横幅固定名 `avatar.png` / `banner.jpg`；推文配图 `tweet-<推文id>.<ext>`，一条一张。都在上传前被 canvas 缩小，拿不回原图 |
 | 写盘 | 整文件覆盖写、无写队列；编辑 / 置顶失败不回滚内存，删除与新增 / 捕获会回滚（§10） |
-| 面板钩子 | 只有 `buildPanelSection()`：没有 `settingsBlock`（「扩展」设置面板里没有推特区块）、没有 `services`、没有 `debug` |
+| 面板钩子 | 只有 `buildPanelSection()`：没有 `settingsBlock`（「扩展」设置面板里没有推特区块）、没有 `services`、没有 `debug`（预留能力，框架目前不读） |
 | `rt.state.loaded` | 只在 `reloadTwitter()` 里置 `true`，只有 `describeTwitter()` 读 |
 | i18n | 界面文案全是硬编码简体中文，没走酒馆的 `t()` |
 
@@ -615,25 +676,33 @@ buildTwitterPanel() → section('推特', { open: false })
 
 `npm test`（= `node tools/smoke-test.mjs`）里推特相关断言散在整份脚本里，搜 `推特` / `twitter` 就能定位；覆盖到的：
 
-- **面板结构**：主面板三块（`#roleEx-twitter-section` 排第一、带 `roleEx-span-all`）、区块里有
+- **面板结构**：主面板四块（`#roleEx-twitter-section` 按清单顺序排最后、带 `roleEx-span-all`；
+  同样带 `roleEx-span-all` 的还有最上面的衣装那块，中间的状态栏与日记两列并排）、区块里有
   `#roleEx-twitter-frame` / `#roleEx-twitter-status` / `#roleEx-twitter-list`；
   标题行只剩 [图标, 标题, 箭头]，状态与 `新增推文`/`刷新` 都在**默认收起**的「推文管理」里
   （顺序：状态 → 按钮行 → 说明 → 列表），正文直接子节点只剩 4 个，三个折叠块都带 `roleEx-twitter-fold`
-- **版面契约**：srcdoc 是固定高度的一屏（`html, body` `height:100% + overflow:hidden`）、body flex 竖排、
-  `.tw-head` 不吃伸缩、`#tw-posts` 是唯一滚动容器且 `#tw-empty` 在它里面；
+- **版面契约**：srcdoc 是固定高度的一屏（`html, body` `height:100% + overflow:hidden`）、`#tw-home` flex 竖排、
+  `.tw-head` 不吃伸缩、`#tw-posts` 是唯一滚动容器且 `#tw-empty` 在它里面、`#tw-detail-wrap` 默认收起；
   iframe 高度由 CSS 写死（`clamp()`）、没有 `min-height`、**父页面完全不写 `style.height`**、不带 `scrolling`；
-  切非「帖子」标签加 `is-empty`、滚动容器本身不被藏、切回来还原
+  切「回复 / 喜欢」加 `is-empty`、滚动容器本身不被藏、切回来还原
 - **捕获与契约**：`<推文时间>` 就近配对、正文换行原样保留、标签从正文剥离且不留多余空行、
   第二条推文 `seq` 更大（排序依据）、无时间就不显示时间行
-- **数字**：浏览落在 500~50000、点赞 ≤ 8%（且 ≥1）、转发 ≤ 30%、评论 ≤ 20%；重读文件后数字不变（固化）；
+- **数字**：浏览落在 500~50000、喜欢 ≤ 8%（且 ≥1）、转帖 ≤ 30%、评论 ≤ 20%、书签 ≤ 6%；重读文件后数字不变（固化）；
   手改 JSONL 后的数字能读回，`srcdoc` 里用 K 记法显示（`1.2K` / `32K`）
 - **置顶**：管理列表里有「置顶」按钮，点了之后 `pinned` 恰好一条、是想置顶的那条，`srcdoc` 里它排在前面
-- **渲染**：`srcdoc` 里**没有** `<script>`；四个数字的图标都在；模型写的 HTML 被转义成 `&lt;b&gt;`
-- **配图**：没配图的推文 srcdoc 里没有 `class="tweet-image"`；手改 JSONL 挂上 `image` + 假资源表里放图 → 渲染成
+- **渲染**：`srcdoc` 里**没有** `<script>`；五个数字的图标都在；模型写的 HTML 被转义成 `&lt;b&gt;`
+- **配图 / 媒体**：没媒体的推文主页那段里没有 `class="tweet-image"`；手改 JSONL 挂上 `image` + 假资源表里放图 → 渲染成
   `<img class="tweet-image" src="data:…">`；文件读不到时**不画** `<img>`；`image` 写成路径会被忽略；
-  编辑弹窗里有「上传图片 / 清除配图」；删除推文会连配图文件一起删
-- **三个交互**：关注按钮文案 / `followed` / 粉丝数 ±1；🔄❤️ 数值 ±1 与 `is-active`；三个字段都落盘；
-  **点一下前后 `srcdoc` 字符串完全一致**（证明没有重建、没有刷新动画）；写盘失败时连 DOM 都没动
+  `.mp4` 的 `mediaUrl` → `<video class="tweet-video" … controls …>`（没有 `autoplay`）；`.gif` → `<img>`；
+  无后缀 + 手选「视频」→ `<video>`；`.flv` **不算视频**；本地图与 URL 并存时 **URL 优先**、清掉 URL 回到本地图；
+  `mediaUrl` 写 `javascript:` 之类既不渲染也不进 `srcdoc`；编辑弹窗里有「上传图片 / 清除配图 / 媒体 URL」；
+  删除推文会连配图文件一起删
+- **详情页**：每条推文一份 `.tw-detail-page` + 一个 `.tw-back-btn`；数值行是「a 评论 b 转帖 c 喜欢 d 书签」四项、
+  操作栏五个图标且**不含数字**、浏览数在时间行；主页 `🔖` / `🔗` 都不带数字；
+  点卡片 → 主页隐藏 / 对应那份详情显示（另一份不显示），点返回 → 复原；点控件区**不跳转**；
+  播一个视频会把另一个 `pause()`；`媒体`标签只留 `has-media` 的卡片，切回「帖子」全部回来
+- **三个交互**（关注 / 转发 / 点赞）与**书签**：关注按钮文案 / `followed` / 粉丝数 ±1；🔄❤️🔖 数值 ±1 与 `is-active`；
+  四个字段都落盘；**点一下前后 `srcdoc` 字符串完全一致**（证明没有重建、没有刷新动画）；写盘失败时连 DOM 都没动
 - **开关**：关掉剥离 → 正文里仍留着标签但照常收录；关掉解析 → 不再收录；孤立时间标签 → 不收录、不动正文
 - **不可用路径**：缺补丁 → `reason = 'patch-missing'`、状态行文案点出 `st-twitter-assets.patch`、iframe `display: none`；
   群聊 → `reason = 'group'` 且**不发任何资源请求**；切回单聊 → `reason` 归 `null`；
@@ -647,4 +716,4 @@ buildTwitterPanel() → section('推特', { open: false })
 与体积上限一律被拒、拒绝项不落地、角色目录改名后整个 `twitter/` 跟着走。
 
 > 改完记得过一遍主 DEVELOPMENT 的「快速自检清单」；把 `modules/twitter/` 整个挪走再跑一次 `npm test`，
-> 框架与另外两个模块应当照常，只有推特相关断言会红。
+> 框架与另外三个模块应当照常，只有推特相关断言会红。

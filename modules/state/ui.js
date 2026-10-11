@@ -9,7 +9,7 @@
 
 export function createStateUi(kernel, rt) {
     // 框架注入（settings / ui 是长期同一个对象，不要缓存它的字段快照）
-    const { checkboxRow, debounce, el, iconFor, section, settings, splitLines, toast, ui, updateSetting } = kernel;
+    const { checkboxRow, collapsible, debounce, el, iconFor, section, settings, splitLines, toast, ui, updateSetting } = kernel;
     // 同模块、别的文件：惰性转发（调用时才取，绕开文件创建顺序的循环依赖）
     const applyStateInjection = (...args) => rt.inject.applyStateInjection(...args);
     const buildStateText = (...args) => rt.inject.buildStateText(...args);
@@ -149,22 +149,26 @@ function buildStatePanel() {
         },
     });
 
+    // 层次与推特模块一致：正文里直接是**平铺内容 + 同级折叠块**，不再套 .roleEx-block。
+    // 五个开关本来就没有标题，按推特「正文内容直接平铺」的写法排在最前面（不额外造一个标题）；
+    // 「状态列表」原本是区块里的一个 roleEx-label，现在由折叠块 header 承担标题（默认展开，与以前一样可见）。
+    const listFold = collapsible('状态列表（随会话保存）', { open: true });
+    listFold.root.setAttribute('id', 'roleEx-state-list-fold');
+    listFold.body.append(
+        list,
+        el('div', { class: 'roleEx-row roleEx-gap roleEx-wrap' }, [clearBtn, exportBtn, importBtn]),
+        el('div', { class: 'roleEx-label', text: '批量添加' }),
+        input,
+        el('div', { class: 'roleEx-row roleEx-gap' }, [addBtn]),
+    );
+
     s.content.append(
-        el('div', { class: 'roleEx-block' }, [
-            checkboxRow(enableToggle, '启用角色状态栏', '关闭后停止注入与标签解析'),
-            checkboxRow(injectToggle, '发送前注入状态提示', '使用下方可自由修改的提示词模板'),
-            checkboxRow(stripToggle, '从聊天消息中剥离状态标签', '关闭后标签仍用于更新数据，但会留在正文里'),
-            checkboxRow(journalLinkToggle, '状态并入日记生成提示', '生成日记时把当前状态作为参考'),
-            checkboxRow(knownOnlyToggle, '只接受已知状态名（推荐）', '模型只更新状态列表里已有的项；关闭后，回复里的新 <名称>值</名称> 会自动加进列表'),
-        ]),
-        el('div', { class: 'roleEx-block' }, [
-            el('div', { class: 'roleEx-label', text: '状态列表（随会话保存）' }),
-            list,
-            el('div', { class: 'roleEx-row roleEx-gap roleEx-wrap' }, [clearBtn, exportBtn, importBtn]),
-            el('div', { class: 'roleEx-label', text: '批量添加' }),
-            input,
-            el('div', { class: 'roleEx-row roleEx-gap' }, [addBtn]),
-        ]),
+        checkboxRow(enableToggle, '启用角色状态栏', '关闭后停止注入与标签解析'),
+        checkboxRow(injectToggle, '发送前注入状态提示', '使用下方可自由修改的提示词模板'),
+        checkboxRow(stripToggle, '从聊天消息中剥离状态标签', '关闭后标签仍用于更新数据，但会留在正文里'),
+        checkboxRow(journalLinkToggle, '状态并入日记生成提示', '生成日记时把当前状态作为参考'),
+        checkboxRow(knownOnlyToggle, '只接受已知状态名（推荐）', '模型只更新状态列表里已有的项；关闭后，回复里的新 <名称>值</名称> 会自动加进列表'),
+        listFold.root,
     );
 
     // 注入提示词模板（可自由修改）—— 作为「角色状态栏」面板内部的子区块
@@ -194,10 +198,10 @@ function buildStatePanel() {
         applyStateInjection();
     });
 
-    const tplSection = section('状态注入提示词', { open: false });
-    tplSection.root.setAttribute('id', 'roleEx-state-tpl-section');
-    iconFor(tplSection.root, 'fa-solid fa-wand-magic-sparkles');
-    tplSection.content.append(
+    // 原来是一个**嵌套的 section**（自带黑底 = 视觉上的另一个层级）；现在与「状态列表」一样是同级折叠块。
+    const tplFold = collapsible('状态注入提示词', { open: false });
+    tplFold.root.setAttribute('id', 'roleEx-state-tpl-fold');
+    tplFold.body.append(
         el('div', { class: 'roleEx-hint', html: '可用变量：<code>{{stateList}}</code> 会被替换为「名称 值」多行列表。' }),
         tpl,
         // 单项「恢复默认」已删除（与日记主提示词一致）：统一走扩展设置面板的「恢复默认设置」。
@@ -211,9 +215,7 @@ function buildStatePanel() {
         ]),
     );
 
-    // 挂进 content（而不是 section root）：这样它是「角色状态栏」正文里的一员，
-    // 走和外层一致的 10px 间距排列，视觉上明确属于这个面板。
-    s.content.append(tplSection.root);
+    s.content.append(tplFold.root);
     return s;
 }
 

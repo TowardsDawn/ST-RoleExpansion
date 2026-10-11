@@ -154,6 +154,17 @@
     .roleEx-scroll {
         grid-template-columns: 1fr;
     }
+
+    /* 衣装面板：左右两栏在窄屏下竖排，各自占满整行 */
+    .roleEx-outfit-cols {
+        flex-direction: column;
+    }
+
+    #roleEx-outfit-preview,
+    #roleEx-outfit-editor {
+        flex: 1 1 auto;
+        width: 100%;
+    }
 }
 
 /* --- 面板骨架 --- */
@@ -265,12 +276,6 @@
     .roleEx-section.roleEx-open > .roleEx-section-body {
         height: 0;
     }
-}
-
-/* 嵌套在外层面板正文里的子区块（日记主提示词 / 状态注入提示词）：
-   去掉背景色，视觉上从属于外层，不会被误认成一块独立面板 */
-.roleEx-section-body > .roleEx-section {
-    background-color: transparent;
 }
 
 .roleEx-section-header {
@@ -523,12 +528,12 @@
 
 
 /* --- 楼层选择 --- */
+/* 楼层选择框：底色 / 圆角 / 内距都由 .roleEx-block 提供（本模块直接把那个类加在列表上），
+   这里只保留它独有的两件事 —— 高度上限 + 内部滚动，以及比通用区块更紧凑的行距。
+   ⚠️ 不要再给它加 border / border-radius：那会变成「区块里再套一个框」。 */
 .roleEx-floors {
     max-height: 260px;
     overflow-y: auto;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 6px;
-    padding: 4px;
     display: flex;
     flex-flow: column;
     gap: 2px;
@@ -778,6 +783,133 @@
 
 .roleEx-twitter-row-preview {
     word-break: break-word;
+}
+
+/* --- 衣装模块（modules/outfit）：分类编辑 + 预览 --- */
+/* 左右两栏：左预览、右编辑器。窄屏在下面（文件末尾的媒体查询）改竖排。 */
+.roleEx-outfit-cols {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+#roleEx-outfit-preview {
+    flex: 0 0 42%;
+    min-width: 0;
+}
+
+#roleEx-outfit-editor {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* 每个分类一行：名称 + 输入框 + 芯片行；挤不下就整行换行，不做横向滚动 */
+.roleEx-outfit-cat {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    border-radius: 4px;
+    background-color: var(--black30a);
+    flex-wrap: wrap;
+}
+
+.roleEx-outfit-cat-name {
+    /* 与 .roleEx-state-name 同一套账：中文全角字符约 1em 宽，分类名比状态名短一档。
+       用 em 而不是 px，跟随酒馆主题字号缩放。 */
+    flex: 0 0 6.5em;
+    font-weight: bold;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 输入框撑满「名称」与 🖊/🗑 之间的剩余宽度 */
+.roleEx-outfit-tags {
+    flex: 1 1 8em;
+    min-width: 0;
+}
+
+.roleEx-outfit-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.roleEx-outfit-chip {
+    flex: 0 0 auto;
+    cursor: pointer;
+    padding: 1px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 999px;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    color: var(--SmartThemeBodyColor);
+    background-color: var(--black30a);
+    white-space: nowrap;
+}
+
+/* 选中态：主题高亮实底（推特里的 .is-active 用的也是这一套高亮色） */
+.roleEx-outfit-chip.is-on {
+    background-color: var(--SmartThemeQuoteColor, #6a9fb5);
+    border-color: var(--SmartThemeQuoteColor, #6a9fb5);
+    font-weight: bold;
+}
+
+/* 分类行的 🖊 / 🗑：平时半透明，hover 才明显 */
+.roleEx-outfit-cat-btn {
+    flex: 0 0 auto;
+    cursor: pointer;
+    padding: 0 3px;
+    opacity: 0.55;
+}
+
+.roleEx-outfit-cat-btn:hover {
+    opacity: 1;
+}
+
+/* 预览里的分组标题：小字 + 上下留白 + 顶边细分隔线 */
+.roleEx-outfit-preview-part {
+    margin: 8px 0 2px;
+    padding-top: 4px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    font-size: calc(var(--mainFontSize) * 0.82);
+    opacity: 0.7;
+}
+
+/* 预览的一行：分类名定宽、值占剩下的宽度 */
+.roleEx-outfit-preview-row {
+    display: flex;
+    flex-flow: row;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 0;
+    min-width: 0;
+}
+
+.roleEx-outfit-preview-name {
+    flex: 0 0 6.5em;
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.roleEx-outfit-preview-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+}
+
+/* 没选任何芯片时的「未选」弱化显示 */
+.roleEx-outfit-preview-value.is-empty {
+    opacity: 0.5;
+}
+
+/* 不可用（群聊 / 缺补丁）时整块置灰且不可点 */
+.roleEx-outfit-cols.is-disabled {
+    opacity: 0.55;
+    pointer-events: none;
 }
 
 /* --- 窄屏 --- */

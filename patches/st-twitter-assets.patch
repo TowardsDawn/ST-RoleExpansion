@@ -11,7 +11,7 @@ index 0000000..63434a1
 + * src/server-startup.js 挂一行；不动 role-expansion.js（日记端点）与任何原生逻辑。
 + *
 + * 路径：<user>/chats/<角色目录>/_RoleExpansion/<sub>/<name>
-+ *   sub  只允许白名单里的模块名（默认 ['twitter']）
++ *   sub  只允许白名单里的模块名（默认 ['twitter', 'outfit']）
 + *   name 单段 ASCII（与酒馆 /api/files/upload 同一条规则），后缀在白名单里
 + *
 + * 路由挂在 /api/role-expansion 下，与日记端点同一个前缀：
@@ -39,7 +39,7 @@ index 0000000..63434a1
 +const PRIVATE_DIR = '_RoleExpansion';
 +
 +/** 允许的模块子目录白名单：想加就再加一个字符串 */
-+const ALLOWED_SUBDIRS = ['twitter'];
++const ALLOWED_SUBDIRS = ['twitter', 'outfit'];
 +
 +/** 允许的文件后缀白名单：图片 + 模块自己的 jsonl */
 +const ALLOWED_EXTENSIONS = ['.jsonl', '.png', '.jpg', '.jpeg', '.webp', '.gif'];
@@ -192,8 +192,7 @@ index e587fa2..3ad7552 100644
  import { router as backupsRouter } from './endpoints/backups.js';
  import { router as imageMetadataRouter } from './endpoints/image-metadata.js';
  import { router as volcengineRouter } from './endpoints/volcengine.js';
--import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
-+import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
+ import { router as roleExpansionRouter } from './endpoints/role-expansion.js';
 +import { router as roleExpansionAssetsRouter } from './endpoints/role-expansion-assets.js';
  
  /**
@@ -202,8 +201,7 @@ index e587fa2..3ad7552 100644
      app.use('/api/data-maid', dataMaidRouter);
      app.use('/api/backups', backupsRouter);
      app.use('/api/image-metadata', imageMetadataRouter);
--    app.use('/api/role-expansion', roleExpansionRouter);
-+    app.use('/api/role-expansion', roleExpansionRouter);
+     app.use('/api/role-expansion', roleExpansionRouter);
 +    app.use('/api/role-expansion', roleExpansionAssetsRouter);
  }
  

@@ -56,7 +56,9 @@ function buildJournalPanel() {
     generateBtn.addEventListener('click', () => generateJournal());
 
     const floorSummary = el('span', { class: 'roleEx-hint', id: 'roleEx-floor-summary', text: '已选 0 楼' });
-    const floorsBox = el('div', { class: 'roleEx-floors', id: 'roleEx-floors' });
+    // 楼层选择框 = 一个标准区块（.roleEx-block：底色 + 圆角 + 内距）。
+    // 直接给列表本身加这个类，而不是在外面再套一层容器 —— 否则就是「框套框」。
+    const floorsBox = el('div', { class: 'roleEx-block roleEx-floors', id: 'roleEx-floors' });
 
     const pickRecent = (n) => {
         const rows = listFloors();
@@ -173,22 +175,19 @@ function buildJournalPanel() {
         id: 'roleEx-inject-status',
         text: '注入状态：检测中…',
     });
-    const injectBlock = el('div', { class: 'roleEx-block', id: 'roleEx-inject-block' }, [
-        el('div', { class: 'roleEx-label', text: '提示词注入' }),
-        injectStatus,
-    ]);
-
-    const generate = el('div', { class: 'roleEx-block', id: 'roleEx-new-journal-block' }, [
-        el('div', { class: 'roleEx-label', text: '新日记' }),
+    // 「新日记」原来是一个 .roleEx-block 区块（标题用 roleEx-label、内部还套着两个折叠块）。
+    // 现在层次与推特模块完全一致：正文里直接是折叠块，标题由折叠块自己的 header 承担。
+    // 默认展开 —— 与以前一样，打开面板就能看到标题输入框与「生成日记」。
+    const newJournalFold = collapsible('新日记', { open: true });
+    newJournalFold.root.setAttribute('id', 'roleEx-new-journal-fold');
+    newJournalFold.body.append(
         titleInput,
         el('div', { class: 'roleEx-row roleEx-gap roleEx-vcenter' }, [
             generateBtn,
             el('span', { class: 'roleEx-hint', text: '用当前 API 独立生成，不动主聊天' }),
         ]),
         checkboxRow(isolatedToggle, '隔离生成（推荐）', '只把日记提示词发给模型：不带主聊天记录、世界书；关闭后退回酒馆的安静生成通道'),
-        cardSettingsFold.root,
-        floorsFold.root,
-    ]);
+    );
 
     // ---- 列表 + 工具 ----
     const list = el('div', { class: 'roleEx-list', id: 'roleEx-journal-list' });
@@ -253,10 +252,6 @@ function buildJournalPanel() {
     // 排在「M 篇 · N 篇已勾选」之前，读下来正好是「勾选 → 用途 → 现状」。
     entriesFold.body.append(injectJournalRow, storageHint, storageNote, list, tools);
 
-    const entries = el('div', { class: 'roleEx-block' }, [entriesFold.root]);
-
-    s.content.append(injectBlock, generate, entries);
-
     // 主提示词编辑器（必须挂进 s.content，否则这个区块根本不会出现在面板里）
     const mainPrompt = el('textarea', {
         class: 'text_pole roleEx-textarea',
@@ -266,15 +261,25 @@ function buildJournalPanel() {
     mainPrompt.value = settings.journalMainPrompt;
     mainPrompt.addEventListener('input', debounce(() => updateSetting('journalMainPrompt', mainPrompt.value), 400));
 
-    const promptSection = section('日记主提示词（可自由修改）', { open: false });
-    iconFor(promptSection.root, 'fa-solid fa-wand-magic-sparkles');
+    // 它原来是一个**嵌套的 section**（自带黑底 = 视觉上的另一个层级）；现在与其它块一样是同级折叠块。
+    // 折叠块 header 里没有图标位（与推特模块的折叠块一致），所以那个魔杖图标去掉了。
+    const promptFold = collapsible('日记主提示词（可自由修改）', { open: false });
+    promptFold.root.setAttribute('id', 'roleEx-main-prompt-fold');
     // 单项「恢复默认」已去掉：要还原主提示词，用扩展设置面板里的「恢复默认设置」
     //（它会按 <存为默认设置> 保存的基准整体还原），避免面板里到处是"恢复默认"。
-    promptSection.content.append(
+    promptFold.body.append(
         el('div', { class: 'roleEx-hint', html: '变量：<code>{{chatRange}}</code> 参考聊天、<code>{{journalRefs}}</code> 参考日记、<code>{{stateList}}</code> 状态；<code>{{char}}</code>/<code>{{user}}</code> 走酒馆宏。' }),
         mainPrompt,
     );
-    s.content.append(promptSection.root);
+    // 一次性挂进面板正文：平铺的状态行 + 五个同级折叠块（顺序与以前看下来的一致）
+    s.content.append(
+        injectStatus,
+        newJournalFold.root,
+        cardSettingsFold.root,
+        floorsFold.root,
+        entriesFold.root,
+        promptFold.root,
+    );
 
     return { section: s, floorSummary, injectJournalToggle };
 }
@@ -430,7 +435,7 @@ function renderJournalStorageHint() {
 
 /**
  * 预设卡片状态：**同一次计算出两份文案**，避免两处各算一遍、出现不一致。
- *   - status：单行，给主面板「日记 → 提示词注入」区块
+ *   - status：单行，给主面板「日记」正文顶部那行注入状态（#roleEx-inject-status）
  *   - detail：完整诊断（状态 / 形态 / 权限 / 控件 / 预览），给酒馆「扩展」设置面板里的日记卡片区块
  */
 function describeJournalCard() {
@@ -506,7 +511,7 @@ function describeJournalCard() {
 
 /**
  * 把 describeJournalCard() 的两份文案分别落地：
- *   - 主面板「日记 → 提示词注入」区块：一行状态
+ *   - 主面板「日记」正文顶部那行注入状态（#roleEx-inject-status）：一行状态
  *   - 酒馆「扩展」设置面板的日记卡片区块：完整诊断
  * 两个元素都可能不在 DOM 里（设置面板要等 APP_READY 后由模板渲染），所以都要容错。
  */

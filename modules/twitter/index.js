@@ -12,8 +12,9 @@
  * 数据分三类（详见模块 README）：
  *   用户编辑  → 资料区（名字/认证/handle/简介/meta/统计）+ 头像/横幅图片
  *   模型输出  → <推文>正文</推文> + <推文时间>…</推文时间>
- *   随机生成  → 评论/转发/点赞/浏览（生成即固化，只能手改 JSONL）
- * 全部存在 <user>/chats/<角色目录>/_RoleExpansion/twitter/ 下（一个 jsonl + avatar.png + banner.jpg）。
+ *   随机生成  → 评论/转帖/喜欢/书签/浏览（生成即固化，可在弹窗改或手改 JSONL）
+ * 全部存在 <user>/chats/<角色目录>/_RoleExpansion/twitter/ 下（一个 jsonl + avatar.png + banner.jpg
+ * + 每条推文的本地配图 tweet-<推文id>.<ext>）。URL 媒体（mediaUrl）不落盘，只在 jsonl 里留地址。
  */
 import { createTwitterStats } from './stats.js';
 import { createTwitterStore } from './store.js';

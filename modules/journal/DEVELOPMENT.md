@@ -466,26 +466,34 @@ ctx().setExtensionPrompt(EXT_PROMPT_KEY.JOURNAL_MAIN /* 'RoleExpansion_JournalMa
 
 ```
 section('日记', { open: false })       #roleEx-journal-section（icon: fa-solid fa-book）
-├─ block #roleEx-inject-block          「提示词注入」+ #roleEx-inject-status（一行状态）
-├─ block #roleEx-new-journal-block     「新日记」
-│   ├─ #roleEx-journal-title           标题输入（placeholder「留空则由模型生成标题」）
-│   ├─ #roleEx-generate-journal        「生成日记」按钮（+ 说明「用当前 API 独立生成，不动主聊天」）
-│   ├─ checkboxRow                     「隔离生成（推荐）」
-│   ├─ collapsible #roleEx-card-fold   『角色设定（隔离通道）』（默认收起）+ 3 个 checkboxRow
-│   └─ collapsible #roleEx-floors-fold 『参考聊天楼层』（默认展开）
-│        ├─ 快捷行（最近 10 楼 / 全选 / 清空 / 刷新楼层）
-│        ├─ 区间行（#roleEx-floor-from / #roleEx-floor-to / #roleEx-floor-range-apply）
-│        ├─ #roleEx-floor-summary
-│        └─ #roleEx-floors             楼层复选框列表
-├─ block                               「日记列表」外层容器
-│   └─ collapsible #roleEx-journal-fold 『日记列表』（默认展开）
-│        ├─ #roleEx-inject-journal     「插入日记系统」（第一行）
-│        ├─ #roleEx-storage-hint       计数 + 落点 / 原因（white-space: pre-line）
-│        ├─ #roleEx-storage-note       存储说明（html）
-│        ├─ #roleEx-journal-list       条目列表
-│        └─ 工具行                     #roleEx-select-all / #roleEx-clear-all / 导出 / 导出所选 / 导入 / 删除所选
-└─ section('日记主提示词（可自由修改）', { open: false }) → #roleEx-journal-main-prompt（textarea rows=8）
+└─ 正文（.roleEx-section-body）**只有一层**：一行平铺状态 + 5 个同级折叠块
+   ├─ #roleEx-inject-status            注入状态（平铺的行；没有标题，文案自带「注入状态：」）
+   ├─ collapsible #roleEx-new-journal-fold   『新日记』（默认展开）—— 原来是 .roleEx-block 里的 roleEx-label
+   │    ├─ #roleEx-journal-title        标题输入（placeholder「留空则由模型生成标题」）
+   │    ├─ #roleEx-generate-journal     「生成日记」按钮（+ 说明「用当前 API 独立生成，不动主聊天」）
+   │    └─ checkboxRow                  「隔离生成（推荐）」
+   ├─ collapsible #roleEx-card-fold     『角色设定（隔离通道）』（默认收起）+ 3 个 checkboxRow
+   ├─ collapsible #roleEx-floors-fold   『参考聊天楼层』（默认展开）
+   │    ├─ 快捷行（最近 10 楼 / 全选 / 清空 / 刷新楼层）
+   │    ├─ 区间行（#roleEx-floor-from / #roleEx-floor-to / #roleEx-floor-range-apply）
+   │    ├─ #roleEx-floor-summary
+   │    └─ #roleEx-floors              楼层复选框列表（同时带 `roleEx-block` = **区块本体**，不是另套一层容器；
+   │                                      底色 / 圆角 / 内距来自 .roleEx-block，只有 260px 高度上限与滚动是自己的）
+   ├─ collapsible #roleEx-journal-fold  『日记列表』（默认展开）
+   │    ├─ #roleEx-inject-journal      「插入日记系统」（第一行）
+   │    ├─ #roleEx-storage-hint        计数 + 落点 / 原因（white-space: pre-line）
+   │    ├─ #roleEx-storage-note        存储说明（html）
+   │    ├─ #roleEx-journal-list        条目列表
+   │    └─ 工具行                      #roleEx-select-all / #roleEx-clear-all / 导出 / 导出所选 / 导入 / 删除所选
+   └─ collapsible #roleEx-main-prompt-fold 『日记主提示词（可自由修改）』（默认收起）→ #roleEx-journal-main-prompt（textarea rows=8）
 ```
+
+**层次约定（与推特模块同一套，改 UI 时别退回去）**：正文里**只有平铺内容 + 同级折叠块**，
+不允许再出现 `.roleEx-block` 包裹层，也不允许把 `section()` 嵌进 `section()`（那是「另一个层级」，
+要靠 CSS 抹背景才能遮住，等于两套层级并存）。原来的 `#roleEx-inject-block` / `#roleEx-new-journal-block`
+两个 block 与「日记主提示词」那个嵌套 section 都已按这条约定拆掉：标题一律由折叠块自己的 header 承担
+（`collapsible()` 的标题行没有图标位，所以旧的魔杖图标一并去掉了）。
+自测里对四个模块的正文都钉了这条契约（不含 `roleEx-block`、不含嵌套 `roleEx-section`）。
 
 约定与坑：
 
@@ -608,11 +616,14 @@ section('日记', { open: false })       #roleEx-journal-section（icon: fa-soli
 `npm test`（= `node tools/smoke-test.mjs`）用 stub DOM + 酒馆桩直接加载真 `index.js`，纯 Node、不需要浏览器。
 日记相关断言散在整份脚本里，搜 `journal` / `roleExpansionJournal` / `隔离` 就能定位。覆盖到的：
 
-- **面板结构**：日记外层区块**默认收起**（三个模块的一级区块都默认折叠）/ 点开后箭头 up、再点收起 down + `display:none`；
+- **面板结构**：日记外层区块**默认收起**（四个模块的一级区块都默认折叠）/ 点开后箭头 up、再点收起 down + `display:none`；
   「参考聊天楼层」「日记列表」「角色设定（隔离通道）」都是 `.inline-drawer`（走酒馆原生委托）；
-  「角色设定」默认收起；「插入日记系统」是折叠体第一行且紧挨计数行；「提示词注入」排在「新日记」之前；
-  「全选」「清空」两个独立按钮（分别勾选全部 / 取消全部）；主提示词编辑框**确实挂在日记面板 section 里**
-  且有 `roleEx-open` 切换；存储说明在面板内、不含版本号、指向角色聊天目录
+  「角色设定」默认收起；「插入日记系统」是折叠体第一行且紧挨计数行；
+  正文直接子节点恰好是 `[注入状态行, 新日记, 角色设定, 参考聊天楼层, 日记列表, 主提示词]` 六个（**一层平铺**，
+  没有 `.roleEx-block`、没有嵌套 `section`）；「新日记」是折叠块且默认展开、原本的 `roleEx-label` 标题已不再使用；
+  「角色设定」「参考聊天楼层」已是「新日记」的**同级**（原来是它的子级）；主提示词是同级折叠块且默认收起；
+  「全选」「清空」两个独立按钮（分别勾选全部 / 取消全部）；主提示词编辑框**确实挂在日记面板里**（不是悬空节点）；
+  存储说明在面板内、不含版本号、指向角色聊天目录
 - **楼层与区间**：没有「最近 30 楼」、保留「最近 10 楼 / 全选 / 清空 / 刷新楼层」、新增「选中区间」；
   区间输入框是 `type=number`；空 / 非数字输入不动已有勾选；`1~2` 命中 `{1,2}`；反向 `2~1` 归一化并写回输入框；
   越界区间提示且不改动原选择
