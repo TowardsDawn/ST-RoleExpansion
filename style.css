@@ -785,8 +785,8 @@
     word-break: break-word;
 }
 
-/* --- 衣装模块（modules/outfit）：分类编辑 + 预览 --- */
-/* 左右两栏：左预览、右编辑器。窄屏在下面（文件末尾的媒体查询）改竖排。 */
+/* --- 衣装模块（modules/outfit）：分类编辑弹窗 + 预览 --- */
+/* 左右两栏：左预览、右编辑器。窄屏在上面的 @media (max-width: 780px) 里改竖排。 */
 .roleEx-outfit-cols {
     display: flex;
     gap: 10px;
@@ -794,8 +794,11 @@
 }
 
 #roleEx-outfit-preview {
-    flex: 0 0 42%;
+    /* 55%：编辑器三组默认收起后，预览区是主要可见内容，太窄就没法一眼看完。
+       min-height 是它的下限：三块全收起时预览不至于被压成一条。 */
+    flex: 0 0 55%;
     min-width: 0;
+    min-height: 12em;
 }
 
 #roleEx-outfit-editor {
@@ -803,7 +806,7 @@
     min-width: 0;
 }
 
-/* 每个分类一行：名称 + 输入框 + 芯片行；挤不下就整行换行，不做横向滚动 */
+/* 每个分类一行：名称 + 编辑（点开编辑弹窗）；挤不下就整行换行，不做横向滚动 */
 .roleEx-outfit-cat {
     display: flex;
     flex-flow: row;
@@ -825,12 +828,21 @@
     white-space: nowrap;
 }
 
-/* 输入框撑满「名称」与 🖊/🗑 之间的剩余宽度 */
-.roleEx-outfit-tags {
-    flex: 1 1 8em;
-    min-width: 0;
+/* 分类编辑弹窗里的字段行（名称 / 备选）：标签在上、控件在下 ——
+   不换行 flex 会把中文标签压成竖排（同 .roleEx-twitter-field 那笔账） */
+.roleEx-outfit-modal-field {
+    display: flex;
+    flex-flow: column;
+    gap: 4px;
 }
 
+/* 弹窗里的控件按契约只带 text_pole / roleEx-textarea 两个类，宽度在这里给 */
+.roleEx-outfit-modal-field > .text_pole {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* 芯片行：只出现在编辑弹窗里（#roleEx-outfit-modal-chips），分类行内已经没有芯片了 */
 .roleEx-outfit-chips {
     display: flex;
     flex-wrap: wrap;
@@ -849,14 +861,16 @@
     white-space: nowrap;
 }
 
-/* 选中态：主题高亮实底（推特里的 .is-active 用的也是这一套高亮色） */
+/* 选中态：背景与未选态一致，只把字色与边框变黄（跟随主题的 --SmartThemeQuoteColor，
+   兜底给黄色）。背景色必须显式写回 --black30a —— 它要压过酒馆对 .menu_button 之类的通用底色。 */
 .roleEx-outfit-chip.is-on {
-    background-color: var(--SmartThemeQuoteColor, #6a9fb5);
-    border-color: var(--SmartThemeQuoteColor, #6a9fb5);
+    color: var(--SmartThemeQuoteColor, #e0b000);
+    border-color: currentColor;
+    background-color: var(--black30a);
     font-weight: bold;
 }
 
-/* 分类行的 🖊 / 🗑：平时半透明，hover 才明显 */
+/* 分类行的 编辑（编辑这个分类，目前唯一的使用者）：平时半透明，hover 才明显 */
 .roleEx-outfit-cat-btn {
     flex: 0 0 auto;
     cursor: pointer;

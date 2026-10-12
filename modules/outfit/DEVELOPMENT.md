@@ -71,6 +71,7 @@ export default {
 | `autoLoadTried` | `renderOutfit()` 里那次自愈加载只做一次（§4.5） |
 | `skipped` | 本次读取跳过的非法行数 |
 | `skippedNote` | 给状态行用的一句话提示（`已跳过 N 行无法解析的衣装数据`），只提示一次 |
+| `foldOpen` | 编辑器三个分类折叠块的展开状态 `{ outer, inner, other }`（默认全 `false`；由 `ui.js` 的 `outfitFoldOpen()` 惰性建 / 补键，语义见 §6.1） |
 | `panel` | 当前面板的 DOM 引用（面板每次重建都整体换掉，所以不放工厂作用域） |
 
 `store.js` 末尾有 `initState()`：`create()` 里传进来的 `rt.state` 会被就地归一化一次
@@ -146,12 +147,15 @@ return {
 **编辑方向**（面板 → 磁盘）：
 
 ```
-点击芯片 / 改输入框 / 新建·改名·删除分类
-  → ui.js 调 store 的对应函数（togglePicked / setCategoryTags / addCustomCategory / renameCustomCategory / removeCustomCategory）
+弹窗里点芯片 / 弹窗里点保存（名称 + 备选表）/ 新建分类 / 弹窗里删除分类
+  → ui.js 调 store 的对应函数（togglePicked / renameCustomCategory + setCategoryTags / addCustomCategory / removeCustomCategory）
   → store 先克隆内存快照 → apply() 改内存 → saveOutfit() 整文件覆盖写
       → 成功：markLoaded() + 清掉 skippedNote → ui.js 重画（renderOutfit() 或局部 renderPreview()+renderStatus()）
       → 失败：内存回滚 + toast('error', '衣装保存失败：' + 文案)，界面被拉回真实状态
 ```
+
+一次「保存」最多是**两次** store 调用、**两次**整文件写（先改名、后备选；各自只在真的改了的时候才写）——
+见 §7 第 5 条。
 
 **注入方向**（酒馆 → 扩展 → 预设卡片）：
 
@@ -187,8 +191,8 @@ const FIXED_CATEGORIES = [
 
 | 概念 | 存在哪 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
-| `tags`（**备选表**） | `catalog[].tags` | 输入框（整表替换，§4.4） | 芯片行、预览的「未选」判断、`normalizePicked` 的过滤基准 |
-| `picked`（**已选**） | `picked[key]` | 点芯片 | **注入正文只看这一份**、预览的显示值 |
+| `tags`（**备选表**） | `catalog[].tags` | 弹窗里的「备选」文本域 + `保存`（整表替换，§4.4） | 弹窗芯片行、预览的「未选」判断、`normalizePicked` 的过滤基准 |
+| `picked`（**已选**） | `picked[key]` | 弹窗里点芯片（**即时落盘**） | **注入正文只看这一份**、预览的显示值 |
 
 规则（都在 `store.js` 里，`ui.js` 不重复实现）：
 
@@ -419,7 +423,7 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
    ├─ #roleEx-outfit-status.roleEx-hint
    │    （不可用且原因不是 no-character 时多一个 .roleEx-warn 红字；title 同步成同一句话）
    ├─ .roleEx-outfit-cols#roleEx-outfit-cols（不可用时加 .is-disabled：置灰 + pointer-events:none）
-   │  ├─ #roleEx-outfit-preview
+   │  ├─ #roleEx-outfit-preview                      ← flex: 0 0 55%; min-height: 12em
    │  │  ├─ .roleEx-label「预览」
    │  │  └─ #roleEx-outfit-preview-list
    │  │     ├─ .roleEx-outfit-preview-part ×3（外 / 内 / 其他）
@@ -427,16 +431,12 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
    │  │        ├─ .roleEx-outfit-preview-name（`分类名：`）
    │  │        └─ .roleEx-outfit-preview-value（未选再加 .is-empty）
    │  └─ #roleEx-outfit-editor
-   │     └─ .roleEx-outfit-group ×3
-   │        ├─ .roleEx-hint.roleEx-outfit-group-head（分组标题：外 / 内 / 其他）
-   │        ├─ .roleEx-outfit-cat#roleEx-outfit-cat-<分类key>
-   │        │  ├─ .roleEx-outfit-cat-name
-   │        │  ├─ input.text_pole.roleEx-outfit-tags#roleEx-outfit-tags-<分类key>
-   │        │  ├─ .roleEx-outfit-chips#roleEx-outfit-chips-<分类key>
-   │        │  │  └─ .roleEx-outfit-chip（选中再加 .is-on）
-   │        │  ├─ .roleEx-outfit-cat-btn#roleEx-outfit-rename-<分类key>  🖊（只有自定义分类才有）
-   │        │  └─ .roleEx-outfit-cat-btn#roleEx-outfit-del-<分类key>     🗑（只有自定义分类才有）
-   │        └─ .menu_button.roleEx-btn-sm#roleEx-outfit-add-cat `+ 新建分类`（只有「其他」组才有）
+   │     └─ .inline-drawer.roleEx-fold.roleEx-outfit-group#roleEx-outfit-fold-<部分key> ×3   ← 默认全收起
+   │        │   （部分key = outer / inner / other，标题 = 折叠块 header 上的「外 / 内 / 其他」）
+   │        ├─ .roleEx-outfit-cat#roleEx-outfit-cat-<分类key>          ← 每行只有两个元素
+   │        │  ├─ .roleEx-outfit-cat-name（`分类名`，超长省略号）
+   │        │  └─ .roleEx-outfit-cat-btn#roleEx-outfit-edit-<分类key>  编辑（点开弹窗；固定分类也有）
+   │        └─ .menu_button.roleEx-btn-sm#roleEx-outfit-add-cat `+ 新建分类`（只有 other 组才有）
    └─ .inline-drawer.roleEx-fold#roleEx-outfit-inject-fold                ← 默认收起
       ├─ .inline-drawer-toggle.inline-drawer-header.roleEx-fold-header「注入模板」
       └─ .inline-drawer-content.roleEx-fold-body
@@ -444,18 +444,63 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
          └─ textarea.text_pole.roleEx-textarea#roleEx-outfit-inject-prompt（rows=4）
 ```
 
+分类编辑弹窗（`openCategoryModal(cat)`，**挂在 `document.body`**、一次性的、不缓存到 `rt.state`；
+结构照推特 / 日记的 `.roleEx-modal`）：
+
+```
+.roleEx-modal#roleEx-outfit-modal                     ← 每次打开前先 remove 掉同名旧节点
+└─ .roleEx-modal-inner
+   ├─ .roleEx-modal-head「编辑「<分类名>」」
+   ├─ .roleEx-outfit-modal-field                        ← 列方向 flex（标签在上、控件在下）
+   │  ├─ span.roleEx-hint.roleEx-inline-label「名称」 + input.text_pole#roleEx-outfit-modal-name
+   │  │     （**整段只有自定义分类才有**）
+   │  └─ 以上是「名称」；下面这一段永远有 ↓
+   ├─ .roleEx-outfit-modal-field
+   │  ├─ span.roleEx-hint.roleEx-inline-label「备选」
+   │  ├─ textarea.text_pole.roleEx-textarea#roleEx-outfit-modal-tags（rows=3）
+   │  └─ .roleEx-hint「每个填一项、用英文逗号分隔；中文逗号不切分。」
+   ├─ 备选表非空 → .roleEx-outfit-chips#roleEx-outfit-modal-chips
+   │                 └─ .roleEx-outfit-chip（选中再加 .is-on）
+   │  备选表为空 → .roleEx-hint「先在上面填备选 tag」（**没有 chips 容器**）
+   └─ .roleEx-row.roleEx-wrap
+      ├─ .menu_button.roleEx-btn-sm#roleEx-outfit-modal-save「保存」
+      ├─ .menu_button.roleEx-btn-sm#roleEx-outfit-modal-cancel「取消」
+      └─ .menu_button.roleEx-btn-sm#roleEx-outfit-modal-del「删除分类」（**只有自定义分类才有**）
+```
+
 - **`style.css` 里真正写了样式的是这些**（`roleEx-outfit-*`）：
-  `.roleEx-outfit-cols`（含 `@media (max-width: 780px)` 里的竖排）、`#roleEx-outfit-preview`、`#roleEx-outfit-editor`、
-  `.roleEx-outfit-cat`、`.roleEx-outfit-cat-name`、`.roleEx-outfit-tags`、`.roleEx-outfit-chips`、
+  `.roleEx-outfit-cols`（含 `@media (max-width: 780px)` 里的竖排）、`#roleEx-outfit-preview`（55% + `min-height`）、
+  `#roleEx-outfit-editor`、`.roleEx-outfit-cat`、`.roleEx-outfit-cat-name`、
+  `.roleEx-outfit-modal-field`（及其 `> .text_pole { width: 100% }`）、`.roleEx-outfit-chips`、
   `.roleEx-outfit-chip`（`.is-on`）、`.roleEx-outfit-cat-btn`（`:hover`）、`.roleEx-outfit-preview-part`、
   `.roleEx-outfit-preview-row`、`.roleEx-outfit-preview-name`、`.roleEx-outfit-preview-value`（`.is-empty`）、
-  `.roleEx-outfit-cols.is-disabled`。
-- **`.roleEx-outfit-group` / `.roleEx-outfit-group-head` 没有专门样式，这是有意为之**：
-  分组标题元素同时带 `.roleEx-hint`，外观完全来自那条通用提示文字样式；
-  那两个类只是**结构标记**（自测与排查时按它们定位），**不是「缺样式」**。加样式前请先想清楚要不要让三组标题与别处不一致。
+  `.roleEx-outfit-cols.is-disabled`；弹窗外壳（`.roleEx-modal` / `.roleEx-modal-inner` / `.roleEx-modal-head`）
+  是框架的通用样式（`style.css:690 / :700 / :712`），本模块只加了 `.roleEx-outfit-modal-field`。
+- **`.roleEx-outfit-group` 没有专门样式，这是有意为之**：它只是加在三个折叠块 root 上的**结构标记**
+  （自测与排查时按它定位三组），外观全部来自框架的 `collapsible()` / `.roleEx-fold*`。
+  0.10.1 之前那个 `.roleEx-outfit-group-head`（分组标题）已经不存在 —— 标题现在由折叠块 header 承担。
 - 状态行/两栏/折叠块的顺序、`.roleEx-outfit-cols` 这个形状都是**契约**（框架与自测都按它找），改结构要连着改自测。
 - 折叠块走框架的 `collapsible()`（酒馆原生 `.inline-drawer` + 文档级委托处理器），
-  箭头语义「收起 ↓ / 展开 ↑」与站内一致，初始 `display` 由 `collapsible()` 自己写死（主 DEVELOPMENT §4.2 第 2 条）。
+  箭头语义「收起 ↓ / 展开 ↑」与站内一致，初始 `display` 由 `collapsible()` 自己写死（主 DEVELOPMENT §4.2 第 2 条）；
+  三个分类折叠块的**展开状态自己记**（见 §6.1），注入模板那个不记（它是固定默认收起）。
+
+### 6.1 分类折叠块的展开状态（`rt.state.foldOpen`）
+
+```js
+// ui.js：outfitFoldOpen() —— 缺的键补 false，已有的布尔值不覆盖
+rt.state.foldOpen = { outer: false, inner: false, other: false };
+// renderEditor()：collapsible(part.label, { open: foldOpen[part.key] === true })
+//                 fold.header.addEventListener('click', () => { foldOpen[part.key] = !foldOpen[part.key]; })
+```
+
+| 事实 | 说明 |
+| --- | --- |
+| 默认 | 三组**全部收起**（三个键都由 `outfitFoldOpen()` 补成 `false`） |
+| 谁翻转 | **只有折叠块 header 的 click**（自己绑在 `fold.header` 上）—— 不去读 `body.style.display` |
+| 为什么不去读 DOM | 展开 / 收起是酒馆原生 `.inline-drawer-toggle` 委托处理器在动 DOM，动画中间态读 `display` 拿不准 |
+| 记忆范围 | 存在 `rt.state` 上（不是 `settings`）：**面板重画后仍保持**（新建 / 改名 / 删除 / 点芯片触发的重画都不会把它收回去），**换会话也保留**（同一个页面生命周期内）；**刷新页面 / 重开酒馆回到全收起** |
+| 不写盘 | 它只描述「界面长什么样」，和分类 / 已选数据无关 —— 与框架的界面偏好（面板锁定）同一个理由（主 DEVELOPMENT §4.6） |
+| 缺键 / 脏值 | `outfitFoldOpen()` 只补 `boolean` 之外的键，不会清掉用户点过的那份 |
 
 ### 「扩展」设置面板里的那一块（`settingsBlock()`）
 
@@ -483,7 +528,7 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
 
 ## 7. 与冻结规格不同 / 需要点明的实现取舍
 
-四条都已经落地，写在这里免得后人以为是漏改：
+八条都已经落地（1–4 是冻结规格核对时的取舍，5–8 是 **0.10.1 面板重做**带出来的），写在这里免得后人以为是漏改：
 
 1. **`inject.js` 同时导出带 `Outfit` 的别名**（`ensureOutfitRuntimeSource` / `adoptOutfitCardStateFromPreset`）。
    冻结规格里只有 `ensureRuntimePromptSource` / `adoptCardStateFromPreset`；
@@ -502,6 +547,22 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
    共用一句 `if (armed || needsFirstLoad) void reloadOutfit();` —— 自愈加载存在的理由是框架没在
    `APP_READY` 调 `reloadOutfit`（§4.5）。
 
+> 下面 5–8 条是 **0.10.1 面板重做**（弹窗 + 折叠块 + 预览加宽）带出来的取舍：
+5. **一次「保存」= 顺序执行两步写入，不做事务**：先 `renameCustomCategory()`（只有名称真的改了才调）、
+   再 `setCategoryTags()`（只有备选文本真的变了才调）——**两步都成功才关窗重画**，任一步失败就停在弹窗里。
+   代价是「改名成功、备选失败」时名字已经落盘（没有回滚第一笔），窗口标题也还是旧名；
+   换来的是**不引入多步事务**：每一步都是既有的 `persistChange()`（内存快照 → 落盘 → 失败回滚）。
+   名称的两种可预期拒绝（空名 / 重名）**放在调 store 之前**，所以它们一次盘都不写。
+6. **备选表为空时不建 chips 容器**，只放一句提示 `.roleEx-hint`「先在上面填备选 tag」。
+   理由：没有 tag 就没有可点的东西，一个空容器既没有语义、又会让自测的「弹窗里有 `#roleEx-outfit-modal-chips`」变成假命题。
+   判据是**弹窗打开那一刻**的 `cat.tags`（不是文本域的实时内容）—— 所以「删光备选 → 存 → 重开弹窗」才会变成提示态。
+7. **`buildCategoryRow(cat)` 只有一个参数**了（旧版是 `(cat, pickedTags)`）：分类行不再持有芯片，也就不需要「当前选中」这份输入。
+   行里**只剩两个元素**（名称 + `编辑`），固定分类与自定义分类在这一层没有区别 ——
+   名称框与 `删除分类` 由弹窗按 `cat.custom` 决定要不要建。
+8. **行间距比看上去多 6px**：三个折叠块的 body 落在框架既有的 `.roleEx-fold-body > * { margin-bottom: 6px }`
+   （`style.css:339`）之下，所以每行分类之间是「自己的 padding + 6px」。这是**复用 `collapsible()` 的直接结果**，
+   不是漏写间距 —— 想改就改那一条通用规则（会影响所有模块的折叠体），别在这里加负 margin。
+
 ---
 
 ## 8. 踩过的坑
@@ -512,7 +573,7 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
 | 2 | 空会话一打开就一片红 | 把「还没选角色」当成了错误 | 状态行对 `no-character` 走 `quiet` 分支：不打 `roleEx-warn`、也不弹 Toast（与日记 / 推特同一决定） |
 | 3 | 「界面变了、文件没变」 | 先改内存再落盘，写失败却已经重画 | 一律 `persistChange()`（先快照 → 落盘 → 失败回滚内存 + Toast），`ui.js` 只在 `res.ok` 后才重画 |
 | 4 | 删掉一个 tag 再打回来，选择没恢复 | 备选表整表替换时会清掉不在新表里的已选 | 这是**有意**的（§7 第 3 条）；界面文案与 README 都写明了 |
-| 5 | 点一下芯片，正在打的输入框内容被清掉 | 芯片点击走了整块 `renderOutfit()` | 芯片点击只 `renderPreview()` + `renderStatus()` + 改该芯片的类与 title，**不重建编辑器** |
+| 5 | 点一下芯片，正在打的文字（旧版是行内输入框，现在是弹窗里的备选文本域 / 名称框）被清掉 | 芯片点击走了整块 `renderOutfit()` | 芯片点击只 `renderPreview()` + `renderStatus()` + 改该芯片的类与 title；**弹窗是独立节点，根本不在重画范围内**（0.10.1 之后这个坑自然消失，但「别在弹窗里调用 `renderOutfit()`」这条仍然成立 —— 那会连弹窗一起重建） |
 | 6 | 状态行一直念「已跳过 N 行」 | 每次读都重算提示 | `skippedNote` 只写一次；`saveOutfit()` 成功后清空（写回就是整份重写，坏行已经没了） |
 | 7 | 手改 JSONL 之后界面「数据没了」 | 归一化把未知 key / 不在备选表里的 tag 丢掉了 | 这是设计（§4.3）；文件仍在，面板状态行会显示坏行计数，改回去即可 |
 | 8 | 卡片在，但生成时没有衣装正文 | 运行时源没注册（`ensureOutfitRuntimeSource()` 只在预设切换路径上被调）或卡片没插进 `prompt_order` | 诊断文案会分别点出「权限 / 补丁」与「位置：没有插进任何 prompt_order 块」；控制台另有 `logMarkerSupport()` |
@@ -545,9 +606,9 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
 `outfitAvailability` `loadOutfit` `saveOutfit` `persistChange` `setCategoryTags` `togglePicked`
 `addCustomCategory` `renameCustomCategory` `removeCustomCategory` `parseTagList` `normalizeCatalog`
 `normalizePicked` `encodeOutfitJsonl` `buildOutfitList` `currentIdentity` `buildOutfitPanel`
-`renderStatus` `renderPreview` `renderEditor` `buildCategoryRow` `openPresetPanel`
-`describeOutfitCard` `diagnoseOutfitCard` `readOutfitCard`。
-需要时临时在模块里打点，或从面板上点一遍。
+`renderStatus` `renderPreview` `renderEditor` `buildCategoryRow` `openCategoryModal` `outfitFoldOpen`
+`onAddCategory` `openPresetPanel` `describeOutfitCard` `diagnoseOutfitCard` `readOutfitCard`。
+需要时临时在模块里打点，或从面板上点一遍（弹窗里的 `保存` / `取消` / `删除分类` 就是那三个入口）。
 
 控制台会自己说话的地方：
 
@@ -601,11 +662,40 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
 衣装相关断言散在整份脚本里，搜 **`衣装` / `outfit`**（以及 `roleEx-outfit-*` 这些 id / 类名）就能定位。
 覆盖到的（**不写死断言总数** —— 那个数字会随迭代变，以脚本结尾打印的 `全部通过（共 N 项断言）` 为准）：
 
+> 0.10.1 把编辑器从「行内输入框 + 行内芯片」改成「编辑弹窗 + 三个折叠块」，这一批断言**同步重写过**：
+> 旧结构现在是按「**不存在**」断言的（`#roleEx-outfit-tags-*` / `.roleEx-outfit-group-head` /
+> `.roleEx-outfit-tags` 的 CSS 规则），所以别把它们当成漏测。
+
 - **面板结构**：清单第一条 = 主面板里的**第一块**；`#roleEx-outfit-section` 带 `roleEx-span-all` 且默认收起；
   正文的直接子节点恰好是 `[状态行, 两栏, 注入模板折叠块]`；
   两栏里 `#roleEx-outfit-preview` / `#roleEx-outfit-editor` 都在；注入模板折叠块默认收起
+- **分类折叠块（0.10.1）**：编辑器里是**三个** `.inline-drawer.roleEx-fold.roleEx-outfit-group`，
+  带 `#roleEx-outfit-fold-outer` / `-inner` / `-other`，**默认全部收起**（body 显式 `display:none`）；
+  点 header 展开后 `rt.state.foldOpen[<key>]` 翻成 `true`，**重画后仍保持**（同一页面内）；
+  「其他」组里是 `#roleEx-outfit-add-cat`，另两组没有它
+- **分类行只剩两个节点（0.10.1）**：`#roleEx-outfit-cat-<分类key>` 下只有
+  `.roleEx-outfit-cat-name` + `.roleEx-outfit-cat-btn#roleEx-outfit-edit-<分类key>`（文案就是 `编辑`，固定分类也有）；
+  旧版的**行内**节点 `#roleEx-outfit-tags-*` / `#roleEx-outfit-chips-*` / `#roleEx-outfit-rename-*` /
+  `#roleEx-outfit-del-*` **都不再存在**（断言按「不存在」钉）
+- **预览区（0.10.1）**：CSS 规则里 `#roleEx-outfit-preview` 是 `flex: 0 0 55%` + `min-height: 12em`
+  （自测读的是 `style.css` 文本，值逐字比对）
+- **分类编辑弹窗（0.10.1）**：点 `编辑` 后 `document.body` 下出现 `.roleEx-modal#roleEx-outfit-modal`，
+  里面依次是 `.roleEx-modal-head`（`编辑「<分类名>」`）、`.roleEx-outfit-modal-field`（名称，**只有自定义分类才有**）、
+  `.roleEx-outfit-modal-field`（备选：`#roleEx-outfit-modal-tags` + 「用英文逗号分隔」提示）、
+  芯片行 `#roleEx-outfit-modal-chips`（备选非空时）/ `.roleEx-hint`「先在上面填备选 tag」（备选为空时）、
+  以及三个按钮 `#roleEx-outfit-modal-save` / `-cancel` / `-del`（`-del` 只有自定义分类才有）；
+  同一时刻只允许一个弹窗（重开先 `remove()` 同名旧节点）
+- **弹窗里的行为**：点芯片 → `togglePicked()` 立即落盘（成功才加/去 `.is-on`）、失败时 DOM 不动；
+  `保存`：名称改了才 `renameCustomCategory()`、备选变了才 `setCategoryTags()`，**两步都成功才关窗重画**，
+  失败停在弹窗里；空名 → Toast `名称不能为空`（不写盘）、重名 → Toast `已有同名分类`（不写盘）、
+  两步都没变化 → 直接关窗（不产生写盘）；
+  `取消`：只 `remove()` 弹窗、**零写盘**（但**不回滚**已点过的芯片）；
+  `删除分类`：有 `confirm()`，确认后才 `removeCustomCategory()`，成功才关窗重画
+- **芯片选中态（0.10.1）**：CSS 规则里 `.roleEx-outfit-chip.is-on` 是
+  `color: var(--SmartThemeQuoteColor, #e0b000)` + `border-color: currentColor` + `background-color: var(--black30a)`
+  （**背景与未选态一致**，断言不会把 `.is-on` 当成实底高亮）
 - **分类模型**：七个固定分类（外 5 + 内 2）都在、顺序是 外 → 内 → 其他；
-  自定义分类落在「其他」且带 `🖊` / `🗑`；固定分类行**没有**这两个按钮；
+  自定义分类落在「其他」；固定分类的弹窗里**没有**名称框与 `删除分类`；
   新建重名 / 空名被拒；删除自定义分类会把它的备选 tag 与已选一起清掉
 - **备选表**：英文逗号切分 + `trim` + 去空 + 去重保序；**中文逗号不切分**；
   提交是整表替换；连带清掉不在新表里的已选 tag

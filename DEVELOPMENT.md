@@ -15,7 +15,7 @@
 | 代码规模 | 框架 `index.js` ≈ 1834 行；模块 ≈ 6316 行（outfit 1569 / twitter 2294 / journal 1837 / state 616）、`style.css` ≈ 931 行、`index.html` 51 行 —— 都是 `(Get-Content <文件>).Count` 的实测值（含空行与注释） |
 | 运行前提 | SillyTavern ≥ 1.18.0（**1.19.0 已复验**，补丁能干净落地）**且**已应用 `patches/` 下的三份补丁（`st-marker-prompt` → `st-journal-store` → `st-twitter-assets`，顺序不能反） |
 | 后端 | 无自有后端。持久化 = `chatMetadata`（状态） + 补丁新增的 `/api/role-expansion/journal/*`（日记 jsonl）与 `/api/role-expansion/asset/*`（模块私有子目录：推特 jsonl + 头像 / 横幅 / 本地配图、衣装 jsonl；URL 媒体只存地址，不落盘） |
-| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 591 项断言）；`npm run test:patch` 另跑两份补丁端点 |
+| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 632 项断言）；`npm run test:patch` 另跑两份补丁端点 |
 
 接手时最该先搞明白的三件事：
 
@@ -243,7 +243,8 @@ function ctx() {
 - `logMarkerSupport()` / `diagnoseJournalCard()` 会在控制台打出具体缺哪一处
 - 缺服务端补丁的三个模块会**明确报出来**（都不会静默）：日记面板红字点出 `st-journal-store.patch`、
   推特面板红字点出 `st-twitter-assets.patch`（缺补丁时推特的仿推特页面整块隐藏，资料区照旧能打字但写不进去）、
-  衣装面板红字点出 `st-twitter-assets.patch`（两栏置灰，输入框照旧能打字但写不进去）。
+  衣装面板红字点出 `st-twitter-assets.patch`（两栏整块置灰 `pointer-events: none`，连 `编辑` 都点不动，
+  所以进不了弹窗、也就不会「打了字却写不进去」）。
   ⚠️ **两种「端点不对」都会明确报出来，但原因不同**：端点**整个不存在**（404）→ `patch-missing`；
   端点**存在但 `ALLOWED_SUBDIRS` 里没有 `outfit`**（旧版补丁，服务端回 **400** → 框架给的原始原因是
   `invalid-path`）→ 衣装模块把它**归一成 `sub-not-allowed`**（探针用的是固定合法值，只剩「`sub` 不在白名单」
@@ -573,7 +574,7 @@ write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也�
 改动之后，按这个顺序过一遍：
 
 - [ ] `node --check index.js` —— 语法
-- [ ] `npm test` —— 断言数是否还是 591（或你确实改过断言数；这个数字同时写在 `.github/workflows/smoke-test.yml` 的注释里，改了要一起同步）；改了补丁端点再跑一次 `npm run test:patch`
+- [ ] `npm test` —— 断言数是否还是 632（或你确实改过断言数；这个数字同时写在 `.github/workflows/smoke-test.yml` 的注释里，改了要一起同步）；改了补丁端点再跑一次 `npm run test:patch`
 - [ ] 动了模块系统：把 `modules/<id>/` 挪走再跑一次 `npm test`（框架部分应当照常，模块相关断言会红），
       并在酒馆里确认「面板少一块 + 别的功能照常 + 控制台只多一行 info」
 - [ ] 涉及 UI 的改动：`Ctrl+F5` 后在酒馆里实际点一遍（自测的 DOM 是 stub，覆盖不到视觉）

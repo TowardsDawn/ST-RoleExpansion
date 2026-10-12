@@ -5,6 +5,30 @@
 
 > `0.2.x` 及更早为本地迭代，条目依据 README 与代码整理，细节未必完整。
 
+## [0.10.1] - 2026-10-11
+
+### 变更
+
+- **衣装面板重做：tag 编辑搬进独立弹窗**（结构照推特 / 日记的编辑弹窗）。分类行**只剩**「分类名 + `编辑`」
+  （`#roleEx-outfit-edit-<分类key>`），点 `编辑` 打开 `.roleEx-modal#roleEx-outfit-modal`：
+  **备选**文本域（`#roleEx-outfit-modal-tags`）+ 芯片行（`#roleEx-outfit-modal-chips`），
+  自定义分类另有**名称**框（`#roleEx-outfit-modal-name`）与 `删除分类`（`#roleEx-outfit-modal-del`）。
+  - `保存` = 先改名、后备选表（各自只在真的改了时才写盘），**两步都成功才关窗重画**；任一步失败停在弹窗里。
+    名称空提示 `名称不能为空`、重名提示 `已有同名分类`（这两种不写盘）。
+  - `取消` = 直接关窗、**零写盘**；点芯片本身仍是**即时写入**，所以「取消」不会撤销刚点过的选择。
+  - 备选表为空时弹窗里**没有芯片行**，只显示一句 `先在上面填备选 tag`。
+  - 旧版的行内节点（`#roleEx-outfit-tags-*` / `#roleEx-outfit-chips-*` / `#roleEx-outfit-rename-*` /
+    `#roleEx-outfit-del-*`）与 `.roleEx-outfit-group-head` 一并消失。
+- **预览区加大**：`#roleEx-outfit-preview` 从占 42% 宽改成 **55%**，并加 `min-height: 12em` 下限
+  —— 编辑器三组默认收起后，预览就是这块面板的主要内容。
+- **编辑器三组改成折叠块**：`#roleEx-outfit-fold-outer` / `-inner` / `-other`（走框架的 `collapsible()`），
+  **默认全部收起**；展开状态记在 `rt.state.foldOpen`，**面板重画后仍保持**（刷新页面回到全收起）。
+  预览区**不折叠**。
+- **芯片选中态改成「字色 + 边框变黄、背景不变」**：`.roleEx-outfit-chip.is-on` 现在是
+  `color: var(--SmartThemeQuoteColor, #e0b000)` + `border-color: currentColor`，背景仍是未选态的 `--black30a`
+  （旧版是实底高亮）。
+- 版本号 0.10.0 → 0.10.1（`manifest.json` / `package.json` / README badge / 本文件）。
+
 ## [0.10.0] - 2026-10-11
 
 ### 新增

@@ -2,6 +2,7 @@
  * modules/outfit/ui.js
  *
  * 主面板里的「衣装打扮」区块：一行状态 + 左右两栏（左预览 / 右编辑器）+ 注入模板折叠块。
+ * 分类的改名 / 删除 / 改备选 tag 走独立弹窗（与推特 / 日记同款：挂 document.body，不吃面板的 overflow）。
  *
  * 层次规矩与推特 / 状态栏一致：正文里是**平铺内容 + 同级折叠块**，
  * 不套 .roleEx-block、也不出现嵌套的 .roleEx-section（折叠块自己的 header 就是标题）。
@@ -162,7 +163,10 @@ function renderPreview() {
     }
 }
 
-/** 编辑器：三组分类，每个分类一行（名称 + 备选表输入框 + 芯片行）；「其他」组底部是新建按钮 */
+/**
+ * 编辑器：三组分类，每组一个折叠块（`外` / `内` / `其他`，**默认收起**，展开状态记在 rt.state.foldOpen）；
+ * 每个分类一行（名称 + 编辑），改备选 tag / 改名 / 删除都在弹窗里做；「其他」组底部是新建按钮。
+ */
 function renderEditor() {
     const refs = panelRefs();
     const box = refs && refs.editor;
@@ -171,16 +175,21 @@ function renderEditor() {
     }
     box.textContent = '';
     const catalog = getCatalog();
-    const selection = getSelection();
+    const foldOpen = outfitFoldOpen();
     for (const part of PARTS) {
-        const group = el('div', { class: 'roleEx-outfit-group' }, [
-            el('div', { class: 'roleEx-hint roleEx-outfit-group-head', text: part.label }),
-        ]);
+        const fold = collapsible(part.label, { open: foldOpen[part.key] === true });
+        fold.root.setAttribute('id', 'roleEx-outfit-fold-' + part.key);
+        fold.root.classList.add('roleEx-outfit-group');
+        // 展开 / 收起本身是酒馆原生 `.inline-drawer-toggle` 委托处理器在动 DOM（动画中间态读 body.style.display
+        // 拿不准），所以这里只维护自己的布尔值 —— 新建 / 改名 / 删除触发重画后，用户展开的那一组不会自己收回去。
+        fold.header.addEventListener('click', () => {
+            foldOpen[part.key] = !foldOpen[part.key];
+        });
         for (const cat of catalog.filter(c => c.part === part.key)) {
-            group.appendChild(buildCategoryRow(cat, selection[cat.key] || []));
+            fold.body.appendChild(buildCategoryRow(cat));
         }
         if (part.key === 'other') {
-            group.appendChild(el('div', {
+            fold.body.appendChild(el('div', {
                 class: 'menu_button roleEx-btn-sm',
                 id: 'roleEx-outfit-add-cat',
                 title: '新建一个自定义分类',
@@ -188,85 +197,38 @@ function renderEditor() {
                 onclick: () => { void onAddCategory(); },
             }));
         }
-        box.appendChild(group);
+        box.appendChild(fold.root);
     }
 }
 
-function buildCategoryRow(cat, pickedTags) {
-    const input = el('input', {
-        type: 'text',
-        class: 'text_pole roleEx-outfit-tags',
-        id: 'roleEx-outfit-tags-' + cat.key,
-        placeholder: '用英文逗号分隔，可填多个',
-    });
-    input.value = cat.tags.join(',');
-
-    /** 备选表整表替换：失败时把输入框拉回真实状态（toast 由 store 统一发） */
-    const commitTags = async () => {
-        const previous = cat.tags.join(',');
-        if (input.value === previous) {
-            return;
-        }
-        const res = await setCategoryTags(cat.key, input.value);
-        if (!res.ok) {
-            input.value = previous;
-            return;
-        }
-        renderOutfit();
-    };
-    input.addEventListener('change', () => { void commitTags(); });
-    // 有的浏览器在 Enter 上不补 change：主动 blur 一次，把「提交」这件事做实
-    input.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            input.blur();
-        }
-    });
-
-    const chips = el('div', { class: 'roleEx-outfit-chips', id: 'roleEx-outfit-chips-' + cat.key });
-    for (const tag of cat.tags) {
-        const on = pickedTags.includes(tag);
-        const chip = el('span', {
-            class: 'roleEx-outfit-chip' + (on ? ' is-on' : ''),
-            text: tag,
-            title: on ? '点击取消选择' : '点击选中',
-        });
-        chip.addEventListener('click', async () => {
-            const res = await togglePicked(cat.key, tag);
-            if (!res.ok) {
-                return;
-            }
-            chip.classList.toggle('is-on');
-            chip.title = chip.classList.contains('is-on') ? '点击取消选择' : '点击选中';
-            renderPreview();
-            renderStatus();
-        });
-        chips.appendChild(chip);
+/** 三组的展开状态：默认全收起，只补缺的键（不覆盖用户点过的那一份） */
+function outfitFoldOpen() {
+    if (!rt.state || typeof rt.state !== 'object') {
+        rt.state = {};
     }
+    if (!rt.state.foldOpen || typeof rt.state.foldOpen !== 'object') {
+        rt.state.foldOpen = {};
+    }
+    for (const part of PARTS) {
+        if (typeof rt.state.foldOpen[part.key] !== 'boolean') {
+            rt.state.foldOpen[part.key] = false;
+        }
+    }
+    return rt.state.foldOpen;
+}
 
-    const row = el('div', { class: 'roleEx-outfit-cat', id: 'roleEx-outfit-cat-' + cat.key }, [
+/** 分类行：名称 + 编辑（点开弹窗，见 openCategoryModal）；固定分类与自定义分类在此没有区别 */
+function buildCategoryRow(cat) {
+    return el('div', { class: 'roleEx-outfit-cat', id: 'roleEx-outfit-cat-' + cat.key }, [
         el('span', { class: 'roleEx-outfit-cat-name', text: cat.name, title: cat.name }),
-        input,
-        chips,
+        el('span', {
+            class: 'roleEx-outfit-cat-btn',
+            id: 'roleEx-outfit-edit-' + cat.key,
+            title: '编辑这个分类的备选 tag',
+            text: '编辑',
+            onclick: () => openCategoryModal(cat),
+        }),
     ]);
-    // 固定分类不可改名 / 不可删除，只有自定义分类才有这两个按钮
-    if (cat.custom) {
-        row.appendChild(el('span', {
-            class: 'roleEx-outfit-cat-btn',
-            id: 'roleEx-outfit-rename-' + cat.key,
-            title: '重命名分类',
-            text: '🖊',
-            onclick: () => { void onRenameCategory(cat); },
-        }));
-        row.appendChild(el('span', {
-            class: 'roleEx-outfit-cat-btn',
-            id: 'roleEx-outfit-del-' + cat.key,
-            title: '删除分类',
-            text: '🗑',
-            onclick: () => { void onDeleteCategory(cat); },
-        }));
-    }
-    return row;
 }
 
 /** 重画状态行 + 预览 + 编辑器（不动 settings） */
@@ -329,32 +291,135 @@ async function onAddCategory() {
     renderOutfit();
 }
 
-async function onRenameCategory(cat) {
-    const name = globalThis.prompt('新的分类名（留空取消）：', cat.name);
-    const clean = String(name ?? '').trim();
-    if (!clean) {
-        return;
-    }
-    if (isCategoryNameTaken(clean, cat.key)) {
-        toast('error', '已有同名分类');
-        return;
-    }
-    const res = await renameCustomCategory(cat.key, clean);
-    if (!res.ok) {
-        return;
-    }
-    renderOutfit();
-}
+/**
+ * 分类编辑弹窗（推特 / 日记同款结构：.roleEx-modal → .roleEx-modal-inner → .roleEx-modal-head）。
+ *
+ * 弹窗是**一次性**的：关掉即弃，不缓存引用到 rt.state；挂 document.body，不吃面板的 overflow。
+ * 名称框与「删除分类」只有自定义分类才有（固定分类不可改名 / 不可删除）。
+ */
+function openCategoryModal(cat) {
+    // 同一时刻只允许一个
+    document.getElementById('roleEx-outfit-modal')?.remove();
 
-async function onDeleteCategory(cat) {
-    if (!globalThis.confirm('删除分类「' + cat.name + '」？该分类的备选 tag 与已选 tag 会一起清掉。')) {
-        return;
+    const inner = el('div', { class: 'roleEx-modal-inner' }, [
+        el('div', { class: 'roleEx-modal-head', text: '编辑「' + cat.name + '」' }),
+    ]);
+
+    let nameInput = null;
+    if (cat.custom) {
+        nameInput = el('input', { type: 'text', class: 'text_pole', id: 'roleEx-outfit-modal-name' });
+        nameInput.value = cat.name;
+        inner.appendChild(el('div', { class: 'roleEx-outfit-modal-field' }, [
+            el('span', { class: 'roleEx-hint roleEx-inline-label', text: '名称' }),
+            nameInput,
+        ]));
     }
-    const res = await removeCustomCategory(cat.key);
-    if (!res.ok) {
-        return;
+
+    const tagsArea = el('textarea', { class: 'text_pole roleEx-textarea', id: 'roleEx-outfit-modal-tags', rows: '3' });
+    tagsArea.value = cat.tags.join(',');
+    inner.appendChild(el('div', { class: 'roleEx-outfit-modal-field' }, [
+        el('span', { class: 'roleEx-hint roleEx-inline-label', text: '备选' }),
+        tagsArea,
+        el('div', { class: 'roleEx-hint', text: '每个填一项、用英文逗号分隔；中文逗号不切分。' }),
+    ]));
+
+    // 备选表为空就没有芯片可点，用一句提示顶替芯片行
+    if (!cat.tags.length) {
+        inner.appendChild(el('div', { class: 'roleEx-hint', text: '先在上面填备选 tag' }));
+    } else {
+        const picked = getSelection()[cat.key] || [];
+        const chips = el('div', { class: 'roleEx-outfit-chips', id: 'roleEx-outfit-modal-chips' });
+        for (const tag of cat.tags) {
+            const on = picked.includes(tag);
+            const chip = el('span', {
+                class: 'roleEx-outfit-chip' + (on ? ' is-on' : ''),
+                text: tag,
+                title: on ? '点击取消选择' : '点击选中',
+            });
+            // 与原先的行内芯片完全一致：成功才切状态（失败由 store toast，界面不动）
+            chip.addEventListener('click', async () => {
+                const res = await togglePicked(cat.key, tag);
+                if (!res.ok) {
+                    return;
+                }
+                chip.classList.toggle('is-on');
+                chip.title = chip.classList.contains('is-on') ? '点击取消选择' : '点击选中';
+                renderPreview();
+                renderStatus();
+            });
+            chips.appendChild(chip);
+        }
+        inner.appendChild(chips);
     }
-    renderOutfit();
+
+    /** 保存：① 改名（自定义分类）→ ② 备选表 → ③ 全部成功才关窗重画；任一步失败都停在弹窗里 */
+    const save = async () => {
+        if (nameInput) {
+            const clean = nameInput.value.trim();
+            if (clean !== cat.name) {
+                if (!clean) {
+                    toast('error', '名称不能为空');
+                    return;
+                }
+                if (isCategoryNameTaken(clean, cat.key)) {
+                    toast('error', '已有同名分类');
+                    return;
+                }
+                const renamed = await renameCustomCategory(cat.key, clean);
+                if (!renamed.ok) {
+                    return;
+                }
+            }
+        }
+        if (tagsArea.value !== cat.tags.join(',')) {
+            const saved = await setCategoryTags(cat.key, tagsArea.value);
+            if (!saved.ok) {
+                return;
+            }
+        }
+        modal.remove();
+        renderOutfit();
+    };
+
+    const del = async () => {
+        if (!globalThis.confirm('删除分类「' + cat.name + '」？该分类的备选 tag 与已选 tag 会一起清掉。')) {
+            return;
+        }
+        const res = await removeCustomCategory(cat.key);
+        if (!res.ok) {
+            return;
+        }
+        modal.remove();
+        renderOutfit();
+    };
+
+    const actions = el('div', { class: 'roleEx-row roleEx-wrap' }, [
+        el('div', {
+            class: 'menu_button roleEx-btn-sm',
+            id: 'roleEx-outfit-modal-save',
+            text: '保存',
+            onclick: () => { void save(); },
+        }),
+        el('div', {
+            class: 'menu_button roleEx-btn-sm',
+            id: 'roleEx-outfit-modal-cancel',
+            text: '取消',
+            onclick: () => modal.remove(),
+        }),
+    ]);
+    if (cat.custom) {
+        actions.appendChild(el('div', {
+            class: 'menu_button roleEx-btn-sm',
+            id: 'roleEx-outfit-modal-del',
+            text: '删除分类',
+            onclick: () => { void del(); },
+        }));
+    }
+    inner.appendChild(actions);
+
+    // 取消 = 直接 remove：未保存的改动丢掉，不写盘
+    const modal = el('div', { class: 'roleEx-modal', id: 'roleEx-outfit-modal' }, [inner]);
+    document.body.appendChild(modal);
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +450,7 @@ function describeOutfitCard() {
     const preset = currentPresetName() || '(未识别预设)';
     const probe = probeStPatch();
     const patchLine = (probe.patchedToggle && probe.patchedEdit)
-        ? '权限：PromptManager 已放行（开关 + 铅笔应当可见）'
+        ? '权限：PromptManager 已放行（开关 + 「编辑」应当可见）'
         : `权限：缺失！toggle=${probe.patchedToggle} / edit=${probe.patchedEdit} —— `
             + '浏览器里跑的 PromptManager.js 是旧版，Ctrl+F5 强制刷新；仍不行就是补丁没应用全。';
     const shape = supportsMarkerPromptCard()

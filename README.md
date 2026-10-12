@@ -2,7 +2,7 @@
 
 **一套持续完善的模块化、可扩展的ST扩展插件**
 
-![version](https://img.shields.io/badge/version-0.10.0-blue)
+![version](https://img.shields.io/badge/version-0.10.1-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
@@ -72,7 +72,7 @@
 - 模块全拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
   「扩展」设置面板里只剩框架自己的东西 —— 不会出现「空白面板 + 永远检测中」的假故障
 - 「存为默认设置」/「恢复默认设置」统一管**所有模块的设置项**（快照存进酒馆的扩展设置，重启仍在）
-- 配套离线自测（最小 DOM / ST 桩，**591 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
+- 配套离线自测（最小 DOM / ST 桩，**632 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
 
 **模块**（各自成文）（按主面板里的区块顺序排列 = `modules/manifest.json` 的 `modules[]` 顺序）
 
@@ -404,7 +404,7 @@ roleExpansion.adoptOutfitCardStateFromPreset()  roleExpansion.updateOutfitPreset
 ### 自测脚本
 
 ```bash
-npm test            # = node tools/smoke-test.mjs —— 591 项断言，纯 Node，不需要浏览器/酒馆
+npm test            # = node tools/smoke-test.mjs —— 632 项断言，纯 Node，不需要浏览器/酒馆
 npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点在 express 沙盒里真跑（26 + 36 项）
 ```
 
@@ -534,7 +534,7 @@ ST-RoleExpansion/
 │   ├── st-journal-store.patch        日记文件读写端点
 │   └── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点（子目录白名单 twitter / outfit）
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，591 项断言）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，632 项断言）
 │   ├── patch-endpoint-test.mjs       日记端点 e2e（express 沙盒，可选）
 │   ├── patch-asset-test.mjs          资源端点 e2e（同上）
 │   └── check-filename.mjs            文件名合规校验器
