@@ -618,7 +618,10 @@ function openTweetEditor(target) {
 
     const modal = el('div', { class: 'roleEx-modal' }, [
         el('div', { class: 'roleEx-modal-inner' }, [
-            el('div', { class: 'roleEx-modal-head', text: isNew ? '新增推文' : '编辑推文' }),
+            el('div', { class: 'roleEx-modal-head' }, [
+                el('span', { text: isNew ? '新增推文' : '编辑推文' }),
+                el('i', { class: 'fa-solid fa-xmark menu_button roleEx-btn-xs', onclick: () => modal.remove() }),
+            ]),
             el('div', { class: 'roleEx-twitter-field' }, [
                 el('span', { class: 'roleEx-hint roleEx-inline-label', text: '时间' }),
                 timeInput,

@@ -62,7 +62,9 @@ export default {
 | --- | --- |
 | `identity` | 当前会话身份（`{ id, charDir, chatFile, fileName }`），落点文件名的来源 |
 | `catalog` | 分类表：`[{ key, part, name, custom, tags }]`，建 store 时按内置固定分类补齐 |
-| `picked` | `{ 分类key: 已选 tag[] }`（注入正文只看这一份） |
+| `picked` | `{ 分类key: 已选 tag[] }`（散装选择；预览与注入都读它） |
+| `suits` | `{ outer: [套装…], inner: [套装…] }`（**只有 外 / 内**，见 §3；每套 = `{ id, name, items }`） |
+| `suitPicked` | `{ outer: 套装id|'', inner: 套装id|'' }`（每组选中哪一套，**同组互斥**） |
 | `reason` | 不可用原因（`group` / `no-character` / `patch-missing` / `sub-not-allowed`），`null` = 正常 |
 | `probed` | 资源通道只探一次；页面级失败态下 `armOutfitReprobe()` 会把它置回 `false`（§4.5） |
 | `lastProbeAt` | 上次真探的时间戳，给重探的 3 秒节流用（`REPROBE_MIN_INTERVAL_MS`） |
@@ -75,8 +77,8 @@ export default {
 | `panel` | 当前面板的 DOM 引用（面板每次重建都整体换掉，所以不放工厂作用域） |
 
 `store.js` 末尾有 `initState()`：`create()` 里传进来的 `rt.state` 会被就地归一化一次
-（固定分类补齐、坏条目丢掉、类型不对的字段回默认），**重复调用无副作用** ——
-所以面板在任何时候打开都能画出完整的三组。
+（固定分类补齐、坏条目丢掉、类型不对的字段回默认、套装表按 §4.4 的规则归一化），**重复调用无副作用** ——
+所以面板在任何时候打开都能画出完整的三组 + 两组套装。
 
 ### 1.3 kernel 注入面（模块实际用到的）
 
@@ -147,15 +149,19 @@ return {
 **编辑方向**（面板 → 磁盘）：
 
 ```
-弹窗里点芯片 / 弹窗里点保存（名称 + 备选表）/ 新建分类 / 弹窗里删除分类
-  → ui.js 调 store 的对应函数（togglePicked / renameCustomCategory + setCategoryTags / addCustomCategory / removeCustomCategory）
+分类弹窗：点芯片 / 点保存（名称 + 备选表）/ 新建分类 / 删除分类
+  → ui.js 调 store（togglePicked / renameCustomCategory + setCategoryTags / addCustomCategory / removeCustomCategory）
+套装一级弹窗：点芯片（选/取消这一组的套装）/ 「+ 新建套装」
+  → ui.js 调 store（pickSuit / addSuit）
+套装二级弹窗：点保存（套装名 + 该组全部下属分类）/ 点删除套装
+  → ui.js 调 store（renameSuit（变了才调）+ setSuitItems / removeSuit）
   → store 先克隆内存快照 → apply() 改内存 → saveOutfit() 整文件覆盖写
       → 成功：markLoaded() + 清掉 skippedNote → ui.js 重画（renderOutfit() 或局部 renderPreview()+renderStatus()）
       → 失败：内存回滚 + toast('error', '衣装保存失败：' + 文案)，界面被拉回真实状态
 ```
 
-一次「保存」最多是**两次** store 调用、**两次**整文件写（先改名、后备选；各自只在真的改了的时候才写）——
-见 §7 第 5 条。
+一次「保存」最多是**两次** store 调用、**两次**整文件写（先改名、后备选 / 先改名、再 items；各自只在真的改了的时候才写）——
+分类弹窗见 §7 第 5 条，套装二级弹窗见 §7 第 9 条。
 
 **注入方向**（酒馆 → 扩展 → 预设卡片）：
 
@@ -185,14 +191,28 @@ const FIXED_CATEGORIES = [
     { key: 'underwear',  part: 'inner', name: '内衣' },
     { key: 'underpants', part: 'inner', name: '内裤' },
 ];
+
+// 套装只挂在 外 / 内 两组上（「其他」是自定义分类）；顺序 = 面板里的套装列表 / 二级弹窗的行序
+const SUIT_PARTS = ['outer', 'inner'];
+// 注入正文里 `套装=<名字>` 那一段用的假分类名（jsonl 里不存它，只是拼串时的一个名字）
+const SUIT_CATEGORY_NAME = '套装';
+// 每一组套装能填哪些分类的 items —— 就是该组的固定分类，顺序即二级弹窗里的行序
+const SUIT_ITEMS_BY_PART = {
+    outer: ['hat', 'top', 'bottom', 'socks', 'shoes'],
+    inner: ['underwear', 'underpants'],
+};
+// 手改 jsonl 不许占用的套装 id：两组名 + 七个固定分类 key + 上面那个假分类名
+const SUIT_ID_RESERVED = new Set(SUIT_PARTS.concat(FIXED_CATEGORIES.map(def => def.key), [SUIT_CATEGORY_NAME]));
+const SUIT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;   // 可保留的 id：单段 ASCII 1–32 字符
 ```
 
-两个概念必须分清（面板上就是「左边预览 / 右边编辑」这两半）：
+三个概念必须分清（面板上就是「左边预览 / 右边编辑」这两半）：
 
 | 概念 | 存在哪 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
-| `tags`（**备选表**） | `catalog[].tags` | 弹窗里的「备选」文本域 + `保存`（整表替换，§4.4） | 弹窗芯片行、预览的「未选」判断、`normalizePicked` 的过滤基准 |
-| `picked`（**已选**） | `picked[key]` | 弹窗里点芯片（**即时落盘**） | **注入正文只看这一份**、预览的显示值 |
+| `tags`（**备选表**） | `catalog[].tags` | 分类弹窗里的「备选」文本域 + `保存`（整表替换，§4.4） | 弹窗芯片行、预览的「未选」判断、`normalizePicked` 的过滤基准 |
+| `picked`（**已选**） | `picked[key]` | 分类弹窗里点芯片（**即时落盘**） | 注入正文、预览的显示值 |
+| `suits` / `suitPicked`（**套装**） | `suits[part][]` / `suitPicked[part]` | 套装一级弹窗（新建 / 点芯片）/ 二级弹窗（改名 + items / 删除） | 预览的套装行与各分类的合并值、注入正文的 `套装=` 那一段 |
 
 规则（都在 `store.js` 里，`ui.js` 不重复实现）：
 
@@ -204,6 +224,18 @@ const FIXED_CATEGORIES = [
   新建与改名都先查重（重名直接拒绝、**不写盘**）。
 - `parseTagList(text)`：**只按英文逗号 `,` 切分**（与 ST 世界书的「关键字列表」一致）→ `trim()` → 丢掉空串 → **去重保序**。
   中文逗号 / 顿号不是分隔符；`normalizeTags(value)` 让字符串与数组都走同一条路再合并去重。
+  **套装里的 items 与备选表共用这一套切分**（`normalizeSuitItems()` 按分类逐格走 `normalizeTags()`）。
+
+套装侧的规则（同样都在 `store.js`）：
+
+- **只有 `SUIT_PARTS`（外 / 内）有套装**：`part` 不在其中 → 读时整组丢掉、写时返回 `{ ok:false, reason:'no-part' }`。
+- 每一套的形状是 `{ id, name, items }`，`items` **只有该组的固定分类**（`SUIT_ITEMS_BY_PART[part]`），
+  不在表里的 catKey 一律丢掉、没有内容的分类 = 空数组。
+- **套装名在组内唯一**（`isSuitNameTaken(part, name, exceptId)`，`exceptId` 用于改名时跳过自己）；
+  两组之间可以同名。
+- **同组互斥**：一个组只有一个 `suitPicked[part]`；`pickSuit()` 的语义见 §4.6。
+- **id 不变量**：`isUsableSuitId(id)` = `SUIT_ID_PATTERN` 通过 **且** 不在 `SUIT_ID_RESERVED` 里；
+  归一化时不合格的 id 会被 `newSuitId()` 现场替换（**只换 id、不丢条目**，同组内也不允许重复）。
 
 ---
 
@@ -228,33 +260,49 @@ fileName = 'RoleExpansion_outfit_c_' + charKey + '_j_' + chatKey + '.jsonl';
 - 文件名是**单段 ASCII**（酒馆的文件名校验），所以中文 / 空格 / 括号只进 hash；
   可读的角色目录名与会话名记在**第一行的会话头**里。
 
-### 4.2 三行结构（`encodeOutfitJsonl()`）
+### 4.2 四行结构（`encodeOutfitJsonl()`）
 
 ```text
 第 1 行  { "__roleExpansion": "outfit-session", version, chatId, charDir, chatFile, savedAt }
 第 2 行  { "__roleExpansion": "outfit-catalog", categories: [{ key, part, name, custom, tags }], updatedAt }
 第 3 行  { "__roleExpansion": "outfit-selection", picked: { <key>: [tag…] }, updatedAt }
+第 4 行  { "__roleExpansion": "outfit-suits", suits: { outer: [{ id, name, items }], inner: […] },
+                                              picked: { outer: <套装id|''>, inner: <套装id|''> }, updatedAt }
 ```
 
-- 三个 `__roleExpansion` 字面量分别是 `outfit-session` / `outfit-catalog` / `outfit-selection`（导出成常量 `KIND_*`）。
+- 四个 `__roleExpansion` 字面量分别是 `outfit-session` / `outfit-catalog` / `outfit-selection` / `outfit-suits`
+  （导出成常量 `KIND_SESSION` / `KIND_CATALOG` / `KIND_SELECTION` / `KIND_SUITS`）。
+- **第 4 行是 0.11.0 新增的**；前三行的字段、顺序、含义**一个字都没变**（老文件照常读得进来）。
 - 第 2 行写的是 `catalog.map(...)` 的显式字段（不整对象丢进去），第 3 行写的是**对齐后**的选择表
-  （`alignSelection()`：顺序按当前备选表、丢掉已从备选表里删掉的 tag）。
+  （`alignSelection()`：顺序按当前备选表、丢掉已从备选表里删掉的 tag），第 4 行的每套走 `suitRecord()`
+  写 `{ id, name, items }` 显式字段、`picked` 只写两个 part 的 id。
+- **编码器里会再跑一次归一化**：`encodeOutfitJsonl()` 第一件事就是 `normalizeSuits(suitsState)` ——
+  所以内存里万一混进脏数据，落盘的一定是合规的第 4 行（见 §7 第 13 条）。
 - 文件结尾固定一个 `\n`；`savedAt` / `updatedAt` 都写 `Date.now()`。
-- **每次落盘都是整文件覆盖写**（三行全写），没有写队列、没有局部更新。
+- **每次落盘都是整文件覆盖写**（四行全写），没有写队列、没有局部更新。
 
 ### 4.3 读取归一化（`parseOutfitJsonl()` + `normalize*()`）
 
 | 输入的问题 | 处理 |
 | --- | --- |
 | 行不是合法 JSON / 不是对象 | `skipped += 1`，跳过 |
-| 行的 `__roleExpansion` 不是三个已知值 | `skipped += 1`，跳过 |
+| 行的 `__roleExpansion` 不是四个已知值 | `skipped += 1`，跳过 |
 | 缺 `outfit-session` 行 | `session = null`（会话头只是记录，不影响可用） |
 | 缺 `outfit-catalog` 行 / 分类条目坏 | `normalizeCatalog()`：固定分类按内置补齐；未知固定 key、非 `custom-` 前缀、`part` 未知、`name` 为空的条目丢掉；重复 key 只留第一条 |
 | 备选表里有重复 / 空白 / 非字符串 | `normalizeTags()` → `parseTagList()` 清洗 |
 | `picked` 里有多余 key / 多余 tag | `normalizePicked()`：补成「所有分类都在」的完整表，key 与 tag 都必须能在 catalog 里找到才留下，**顺序按备选表** |
+| **缺 `outfit-suits` 行**（0.10.x 的老文件） | `suitsSrc = null` → `normalizeSuits()` 给出**空套装表**：不报错、**不计坏行**（坏行只看行本身，不看行内字段） |
+| 第 4 行的 part 不在 `SUIT_PARTS` / 条目不是对象 / `name` 非字符串或空白 | 整组丢掉 / 丢掉该条目 |
+| 第 4 行的 `items` 里有别的 catKey | `normalizeSuitItems()` 只留该组固定分类，其余丢掉；值走 `normalizeTags()` |
+| 第 4 行的套装 `id` 不合规 / 同组重复 | `newSuitId()` 现场换一个（**条目保留**，见 §4.6） |
+| `picked[part]` 指向不存在 / 不属于该组的套装 | 置 `''` |
 | 有坏行 | 状态行提示一次 `已跳过 N 行无法解析的衣装数据`（`skippedNote` 只在第一次读到时写，写回成功后清空） |
 
 同一个 `skippedNote` 不会重复刷：`loadOutfit()` 里只有 `!rt.state.skippedNote` 时才写。
+
+> **降级方向的两个提醒**：① 用**旧版插件**（0.10.x）读新文件时，旧代码不认识第 4 行 →
+> 会被当成坏行 → 状态行出现「已跳过 1 行…」（无害，升级回来就没了）；
+> ② 用**新版**读旧文件时什么都不用做 —— 空套装表 + 面板上两组套装行显示「未选」。
 
 ### 4.4 写入：`persistChange()` 的三步约定
 
@@ -279,6 +327,16 @@ persistChange(apply)
 | `addCustomCategory(name)` | 新建 `custom-<uid>`，落在 `other` | `empty-name` / `duplicate-name` |
 | `renameCustomCategory(key, name)` | 只给自定义分类改名（固定分类返回 `no-category`） | `no-category` / `empty-name` / `duplicate-name` |
 | `removeCustomCategory(key)` | 删自定义分类：备选 tag 与已选 tag 一起清掉 | `no-category` |
+
+套装侧的五个入口（同样全走 `persistChange()`，见 §4.6）：
+
+| 函数 | 语义 | 拒绝理由 |
+| --- | --- | --- |
+| `pickSuit(part, id)` | 选中该组某一套 / 再点一次当前已选或传 `''` = 取消（**同组互斥**） | `no-part` / `no-suit` |
+| `addSuit(part, name)` | 新建一套（落该组末尾 = 新建顺序） | `no-part` / `empty-name` / `duplicate-name` |
+| `renameSuit(id, name)` | 改名（**组内**查重，`exceptId` 跳过自己） | `no-suit` / `empty-name` / `duplicate-name` |
+| `setSuitItems(id, items)` | 该套装的 items **整表替换**（只认本组固定分类） | `no-suit` |
+| `removeSuit(id)` | 删除；若它正是该组已选中的那套，连带把 `suitPicked[part]` 置空 | `no-suit` |
 
 ### 4.5 可用性判定：`outfitAvailability()` 是**同步**的
 
@@ -325,6 +383,27 @@ function outfitAvailability() {
   与上面的重探**同一条出口**（`if (armed || needsFirstLoad) void reloadOutfit()`）。它存在的理由是框架没在
   `APP_READY` 里调 `reloadOutfit`（§1.5），而 `autoLoadTried` 保证**只补一次**（读失败不反复重试）。
 
+### 4.6 套装：第 4 行的形状、id 不变量与 `pickSuit()`
+
+```js
+const SUIT_PARTS = ['outer', 'inner'];            // 只有这两组有套装
+const SUIT_ITEMS_BY_PART = { outer: ['hat','top','bottom','socks','shoes'], inner: ['underwear','underpants'] };
+const SUIT_ID_RESERVED = new Set(SUIT_PARTS.concat(FIXED_CATEGORIES.map(d => d.key), [SUIT_CATEGORY_NAME]));
+const SUIT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
+```
+
+| 事实 | 说明 |
+| --- | --- |
+| 形状 | 一套 = `{ id, name, items }`；`items` 的键**只能是** `SUIT_ITEMS_BY_PART[part]` 里的分类，值 = tag 数组 |
+| 常量 | `SUIT_CATEGORY_NAME = '套装'` 只是**注入正文里那一段假分类名**，jsonl 里不存它 |
+| **id 不变量** | 手改的 id 只有「`SUIT_ID_PATTERN` 通过」**且**「不在 `SUIT_ID_RESERVED`」**且**「**同一组内**没被用过」时才保留；否则 `newSuitId()` 现场换一个 —— **只换 id、条目不丢**；不同组之间允许同名 |
+| 为什么这么严 | UI 的 DOM id 是 `#roleEx-outfit-suit-edit-<套装id>` 与 `#roleEx-outfit-suit-edit-<part>` **两种同形模式**，手写一个叫 `outer` 的 id 就会造出重复 DOM id（`getElementById` 会拿到错的节点）；所以两组名、七个固定分类 key、假分类名都列进保留名 |
+| `newSuitId(seen)` | 最多试 32 次；**只查「非空 + 不在 seen 里」**，不跑 `isUsableSuitId()`（`uid()` 是框架保证的，不把它当嫌疑犯）；实在要不到返回 `''`，`addSuit()` 里再兜一次 `uid()` |
+| `pickSuit(part, id)` | `part` 不在 `SUIT_PARTS` → `no-part`（不写盘）；`id` 非空且不属于该组 → `no-suit`（不写盘）；**传 `''` 或传当前已选的 id → 取消**；其余 = 选中（同组只有一个 `suitPicked[part]`，天然互斥） |
+| 「没变化就不写盘」 | 本来就是 `''` 又收到一次「取消」→ 直接返回 `{ ok:true }`，**不产生一次整文件写** |
+| `removeSuit` 的连带 | 删掉的正是该组已选中的那套 → 同时把 `suitPicked[part]` 置 `''` |
+| `getSuits()` / `suitById()` | 都返回 `suitView()` 的**深拷贝**（`items` 逐格复制）：外面（ui.js）改不动 store 的内存 |
+
 ---
 
 ## 5. 注入（`inject.js`）
@@ -364,9 +443,12 @@ register(PRESET_PROMPT.ID, getContent, { name: PRESET_PROMPT.SOURCE_NAME, edit: 
 ```js
 buildOutfitList():                       // store.js，注入正文的「内容」那一半
   for (part of PARTS) {                  // 外 → 内 → 其他（顺序 = 渲染顺序）
-      chunks = [];                       // 该部分里所有「有选中」的分类
+      chunks = [];                       // 该部分里所有「有内容」的分类
+      suit = pickedSuitOfPart(part.key); // 该组选中的套装（没选 = null；「其他」组永远为 null）
+      if (suit) chunks.push(SUIT_CATEGORY_NAME + '=' + suit.name);   // 0.11.0：行首的「套装=…」
       for (cat of catalog 里 part 相同的) {
-          tags = selection[cat.key];     // selection 已按备选表顺序对齐
+          // 散装选中项在前、套装 items 在后，整体去重保序（mergeLooseAndSuit）
+          tags = mergeLooseAndSuit(selection[cat.key], suit?.items?.[cat.key]);
           if (!tags.length) continue;    // 空分类不出现
           chunks.push(cat.name + '=' + tags.join(' / '));
       }
@@ -376,6 +458,8 @@ buildOutfitList():                       // store.js，注入正文的「内容�
 ```
 
 - 行内多个分类用 `；`，同一个分类里的多个 tag 用 ` / `；**空的部分整行不出现**。
+- **`套装=<名>` 只有该组真的选中了套装才写**（没选就整段不出现，不会出现 `套装=` 空值）；
+  分类里的值 = **散装在前、套装项在后、整体去重** —— 这就是「装了套装时各分类位置照常显示其元素」。
 - 模板那一半在 `index.js` 的 `defaults.outfitInjectPrompt` 里，由
   `renderTemplateString(settings.outfitInjectPrompt, { outfitList: list })` 填；
   剩下的 `{{...}}` 交给酒馆的宏替换（`{{char}}` / `{{user}}`…）。
@@ -433,9 +517,13 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
    │  └─ #roleEx-outfit-editor
    │     └─ .inline-drawer.roleEx-fold.roleEx-outfit-group#roleEx-outfit-fold-<部分key> ×3   ← 默认全收起
    │        │   （部分key = outer / inner / other，标题 = 折叠块 header 上的「外 / 内 / 其他」）
+   │        ├─ [仅 outer / inner，且是 body 的**第一行**] 套装行 ↓
+   │        │  .roleEx-outfit-cat#roleEx-outfit-cat-suit-<部分key>
+   │        │  ├─ .roleEx-outfit-cat-name（文本固定 `套装`）
+   │        │  └─ .menu_button.roleEx-btn-xs#roleEx-outfit-suit-edit-<部分key>  编辑（点开套装一级弹窗）
    │        ├─ .roleEx-outfit-cat#roleEx-outfit-cat-<分类key>          ← 每行只有两个元素
-   │        │  ├─ .roleEx-outfit-cat-name（`分类名`，超长省略号）
-   │        │  └─ .roleEx-outfit-cat-btn#roleEx-outfit-edit-<分类key>  编辑（点开弹窗；固定分类也有）
+   │        │  ├─ .roleEx-outfit-cat-name（`分类名`，定宽 13em、超长省略号）
+   │        │  └─ .menu_button.roleEx-btn-xs#roleEx-outfit-edit-<分类key>  编辑（点开分类弹窗；固定分类也有）
    │        └─ .menu_button.roleEx-btn-sm#roleEx-outfit-add-cat `+ 新建分类`（只有 other 组才有）
    └─ .inline-drawer.roleEx-fold#roleEx-outfit-inject-fold                ← 默认收起
       ├─ .inline-drawer-toggle.inline-drawer-header.roleEx-fold-header「注入模板」
@@ -444,13 +532,19 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
          └─ textarea.text_pole.roleEx-textarea#roleEx-outfit-inject-prompt（rows=4）
 ```
 
+> 三种「行」长得一样（`.roleEx-outfit-cat`）：分类行、套装行、以及弹窗里的套装行是**同一套视觉**。
+> 0.11.0 起行内**只剩**「名字 + 一个 `编辑` 按键」，按键靠右（`.roleEx-outfit-cat > .menu_button { margin-left: auto }`）；
+> 旧版的 `.roleEx-outfit-cat-btn`（🖊 / 🗑 两个小图标）**已经不存在**。
+
 分类编辑弹窗（`openCategoryModal(cat)`，**挂在 `document.body`**、一次性的、不缓存到 `rt.state`；
 结构照推特 / 日记的 `.roleEx-modal`）：
 
 ```
 .roleEx-modal#roleEx-outfit-modal                     ← 每次打开前先 remove 掉同名旧节点
 └─ .roleEx-modal-inner
-   ├─ .roleEx-modal-head「编辑「<分类名>」」
+   ├─ .roleEx-modal-head
+   │  ├─ span「编辑「<分类名>」」
+   │  └─ i.fa-solid.fa-xmark.menu_button.roleEx-btn-xs  ×  （= 关窗、不写盘）
    ├─ .roleEx-outfit-modal-field                        ← 列方向 flex（标签在上、控件在下）
    │  ├─ span.roleEx-hint.roleEx-inline-label「名称」 + input.text_pole#roleEx-outfit-modal-name
    │  │     （**整段只有自定义分类才有**）
@@ -462,23 +556,57 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
    ├─ 备选表非空 → .roleEx-outfit-chips#roleEx-outfit-modal-chips
    │                 └─ .roleEx-outfit-chip（选中再加 .is-on）
    │  备选表为空 → .roleEx-hint「先在上面填备选 tag」（**没有 chips 容器**）
-   └─ .roleEx-row.roleEx-wrap
-      ├─ .menu_button.roleEx-btn-sm#roleEx-outfit-modal-save「保存」
-      ├─ .menu_button.roleEx-btn-sm#roleEx-outfit-modal-cancel「取消」
-      └─ .menu_button.roleEx-btn-sm#roleEx-outfit-modal-del「删除分类」（**只有自定义分类才有**）
+   └─ .roleEx-row.roleEx-gap.roleEx-end                 ← 底部统一靠右下角
+      ├─ .menu_button.roleEx-btn.roleEx-danger#roleEx-outfit-modal-del「删除分类」（**只有自定义分类才有**）
+      ├─ .menu_button.roleEx-btn#roleEx-outfit-modal-cancel「取消」
+      └─ .menu_button.roleEx-btn#roleEx-outfit-modal-save「保存」
+```
+
+**套装的两级弹窗**（都挂在 `document.body`；二级叠在一级之上、一级**不关**）：
+
+```
+① 一级：#roleEx-outfit-suit-modal                     ← 点套装行的「编辑」打开；每次先 remove 同名旧节点
+└─ .roleEx-modal-inner
+   ├─ .roleEx-modal-head
+   │  ├─ span「套装（外）」/「套装（内）」              ← SUIT_CATEGORY_NAME + '（' + part.label + '）'
+   │  └─ i.fa-solid.fa-xmark.menu_button.roleEx-btn-xs  ×（关窗时顺带把 suitListRefresh 置 null）
+   ├─ #roleEx-outfit-suit-list
+   │  ├─ 没有套装 → .roleEx-hint「还没有套装，点下面的「+ 新建套装」加一个。」
+   │  └─ .roleEx-outfit-suit-row#roleEx-outfit-suit-row-<套装id>
+   │     ├─ .roleEx-outfit-suit-name（套装名，定宽自适应 + 省略号）
+   │     ├─ .menu_button.roleEx-btn-xs#roleEx-outfit-suit-edit-<套装id>  编辑（→ 二级弹窗）
+   │     └─ .roleEx-outfit-chip（**文本 = 套装名**，带 .is-on 表示这一组当前选中的就是它）
+   └─ .roleEx-row.roleEx-gap.roleEx-end
+      └─ .menu_button.roleEx-btn#roleEx-outfit-suit-add「+ 新建套装」
+
+② 二级：#roleEx-outfit-suit-edit-modal
+└─ .roleEx-modal-inner
+   ├─ .roleEx-modal-head
+   │  ├─ span「编辑套装」
+   │  └─ i.fa-solid.fa-xmark.menu_button.roleEx-btn-xs  ×（只关这一层）
+   ├─ .roleEx-outfit-modal-field（「套装名」+ input.text_pole#roleEx-outfit-suit-name）
+   ├─ .roleEx-outfit-modal-field × N                      ← 按 SUIT_ITEMS_BY_PART 顺序
+   │  ├─ span.roleEx-hint.roleEx-inline-label（分类显示名；取不到就退回 key）
+   │  └─ input.text_pole#roleEx-outfit-suit-item-<分类key>（placeholder「用英文逗号分隔，可填多个」）
+   └─ .roleEx-row.roleEx-gap.roleEx-end
+      ├─ .menu_button.roleEx-btn.roleEx-danger#roleEx-outfit-suit-del「删除套装」
+      ├─ .menu_button.roleEx-btn#roleEx-outfit-suit-cancel「取消」
+      └─ .menu_button.roleEx-btn#roleEx-outfit-suit-save「保存」
 ```
 
 - **`style.css` 里真正写了样式的是这些**（`roleEx-outfit-*`）：
   `.roleEx-outfit-cols`（含 `@media (max-width: 780px)` 里的竖排）、`#roleEx-outfit-preview`（55% + `min-height`）、
-  `#roleEx-outfit-editor`、`.roleEx-outfit-cat`、`.roleEx-outfit-cat-name`、
-  `.roleEx-outfit-modal-field`（及其 `> .text_pole { width: 100% }`）、`.roleEx-outfit-chips`、
-  `.roleEx-outfit-chip`（`.is-on`）、`.roleEx-outfit-cat-btn`（`:hover`）、`.roleEx-outfit-preview-part`、
-  `.roleEx-outfit-preview-row`、`.roleEx-outfit-preview-name`、`.roleEx-outfit-preview-value`（`.is-empty`）、
-  `.roleEx-outfit-cols.is-disabled`；弹窗外壳（`.roleEx-modal` / `.roleEx-modal-inner` / `.roleEx-modal-head`）
-  是框架的通用样式（`style.css:690 / :700 / :712`），本模块只加了 `.roleEx-outfit-modal-field`。
+  `#roleEx-outfit-editor`、`.roleEx-outfit-cat`、`.roleEx-outfit-cat > .menu_button { margin-left: auto }`、
+  `.roleEx-outfit-cat-name`（13em）、`.roleEx-outfit-modal-field`（及其 `> .text_pole { width: 100% }`）、
+  `.roleEx-outfit-chips`、`.roleEx-outfit-chip`（`.is-on`）、`.roleEx-outfit-suit-row`、`.roleEx-outfit-suit-name`、
+  `.roleEx-outfit-preview-part`、`.roleEx-outfit-preview-row`、`.roleEx-outfit-preview-name`（13em，与分类名同宽）、
+  `.roleEx-outfit-preview-value`（`.is-empty`）、`.roleEx-outfit-cols.is-disabled`；
+  弹窗外壳（`.roleEx-modal` / `.roleEx-modal-inner` / `.roleEx-modal-head`）与 `.roleEx-btn` / `.roleEx-btn-xs` /
+  `.roleEx-row.roleEx-end` / `.roleEx-danger` 都是框架的通用样式（`style.css:690 / :700 / :712 / :395 / :438 / :463`），
+  本模块只加了 `.roleEx-outfit-modal-field` 与 `.roleEx-outfit-suit-*`。
 - **`.roleEx-outfit-group` 没有专门样式，这是有意为之**：它只是加在三个折叠块 root 上的**结构标记**
   （自测与排查时按它定位三组），外观全部来自框架的 `collapsible()` / `.roleEx-fold*`。
-  0.10.1 之前那个 `.roleEx-outfit-group-head`（分组标题）已经不存在 —— 标题现在由折叠块 header 承担。
+  0.10.1 之前那个 `.roleEx-outfit-group-head`（分组标题）、0.10.1 那个 `.roleEx-outfit-cat-btn`（🖊/🗑）**都已经不存在**。
 - 状态行/两栏/折叠块的顺序、`.roleEx-outfit-cols` 这个形状都是**契约**（框架与自测都按它找），改结构要连着改自测。
 - 折叠块走框架的 `collapsible()`（酒馆原生 `.inline-drawer` + 文档级委托处理器），
   箭头语义「收起 ↓ / 展开 ↑」与站内一致，初始 `display` 由 `collapsible()` 自己写死（主 DEVELOPMENT §4.2 第 2 条）；
@@ -528,7 +656,8 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 
 ## 7. 与冻结规格不同 / 需要点明的实现取舍
 
-八条都已经落地（1–4 是冻结规格核对时的取舍，5–8 是 **0.10.1 面板重做**带出来的），写在这里免得后人以为是漏改：
+十五条都已经落地（1–4 是冻结规格核对时的取舍，5–8 是 **0.10.1 面板重做**带出来的，
+9–15 是 **0.11.0 形态统一 + 套装子模型**带出来的），写在这里免得后人以为是漏改：
 
 1. **`inject.js` 同时导出带 `Outfit` 的别名**（`ensureOutfitRuntimeSource` / `adoptOutfitCardStateFromPreset`）。
    冻结规格里只有 `ensureRuntimePromptSource` / `adoptCardStateFromPreset`；
@@ -562,6 +691,34 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 8. **行间距比看上去多 6px**：三个折叠块的 body 落在框架既有的 `.roleEx-fold-body > * { margin-bottom: 6px }`
    （`style.css:339`）之下，所以每行分类之间是「自己的 padding + 6px」。这是**复用 `collapsible()` 的直接结果**，
    不是漏写间距 —— 想改就改那一条通用规则（会影响所有模块的折叠体），别在这里加负 margin。
+
+> 下面 9–14 条是 **0.11.0**（形态统一 + 套装子模型）带出来的取舍：
+
+9. **套装二级弹窗的「保存」也是顺序两步、不做事务**：先 `renameSuit()`（名字真的变了才调）、
+   再 `setSuitItems()`（一次性提交该组全部下属分类）—— 都成功才关窗并刷新一级列表与面板。
+   与第 5 条同一个取舍：改名成功而 items 失败时，名字已经落盘。
+   名字的两种可预期拒绝（空名 / 同组重名）同样**放在调 store 之前**，零写盘。
+10. **靠右用 CSS，不用 DOM 顺序**：行内按键贴右边是
+    `.roleEx-outfit-cat > .menu_button { margin-left: auto }`（`style.css:823-824`）—— 
+    因为名称是 `flex: 0 0 13em` 的定宽项、不会自己顶开，所以一个 `margin-left:auto` 就够，
+    不必在行里插空格元素、也不必给名称 `flex: 1`。
+11. **一级套装弹窗「就地重刷列表」，不重建弹窗**：二级弹窗是叠在一级**之上**的另一棵 DOM，
+    重建一级会把二级连带拆掉。所以 `openSuitModal()` 把「重画列表」闭包存进模块级变量 `suitListRefresh`，
+    二级改完数据后调 `refreshSuitModal()` → 只清空并重建 `#roleEx-outfit-suit-list` 的内容；
+    一级关掉时把 `suitListRefresh` 置 `null`（此后 `refreshSuitModal()` 什么都不做，不会打到已移除的节点）。
+12. **`pickSuit()` 只返回三种结果**：`no-part`（这组没有套装，不写盘）/ `no-suit`（id 不属于该组，不写盘）/
+    成功。**「取消」不单独开一个入口**：传 `''` 或传当前已选的 id 都等于取消；本来就是空、又收到一次取消时
+    **直接返回 `{ ok:true }` 而不写盘**（避免一次无意义的整文件写）。
+13. **重复 / 不合规的套装 id 是「重新生成」，不是「丢弃条目」**：`normalizeSuits()` 里
+    `isUsableSuitId()` 不过关或同组撞车 → `newSuitId()` 现场换一个 id，**条目本身保留**
+    （用户手改 JSONL 时写了 `outer` 当 id，丢的是那个名字、不是那套衣服）。
+    编码器 `encodeOutfitJsonl()` 落盘前**又跑一次 `normalizeSuits()`**，所以内存里万一混进脏数据也写不出坏文件。
+14. **`uid()` 生成的 id 不走 `isUsableSuitId()`**：`newSuitId(seen)` 只查「非空 + 不在本组已用集合里」
+    （最多试 32 次），不拿保留名 / 正则去审判框架给的 uid —— 那是给**手改**准备的筛子，
+    对生成值再做一遍只会把「框架说了算」变成「模块猜」。极端情况要不到 id 时 `newSuitId()` 返回 `''`，
+    `addSuit()` 再用一次裸 `uid()` 兜底；`normalizeSuits()` 里则宁可丢掉这一条也不写没有 id 的套装。
+15. **`getSuits()` / `suitById()` 返回深拷贝**（`suitView()` 逐格复制 `items`）：UI 拿着的是快照，
+    改它不会动到 store 的内存 —— 与 `getCatalog()` / `getSelection()` 同一约定。
 
 ---
 
@@ -607,8 +764,12 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 `addCustomCategory` `renameCustomCategory` `removeCustomCategory` `parseTagList` `normalizeCatalog`
 `normalizePicked` `encodeOutfitJsonl` `buildOutfitList` `currentIdentity` `buildOutfitPanel`
 `renderStatus` `renderPreview` `renderEditor` `buildCategoryRow` `openCategoryModal` `outfitFoldOpen`
-`onAddCategory` `openPresetPanel` `describeOutfitCard` `diagnoseOutfitCard` `readOutfitCard`。
-需要时临时在模块里打点，或从面板上点一遍（弹窗里的 `保存` / `取消` / `删除分类` 就是那三个入口）。
+`onAddCategory` `openPresetPanel` `describeOutfitCard` `diagnoseOutfitCard` `readOutfitCard`；
+**套装那一整套**同样调不到：`pickSuit` `addSuit` `renameSuit` `setSuitItems` `removeSuit` `getSuits`
+`getPickedSuit` `suitById` `isSuitNameTaken` `normalizeSuits` `newSuitId` `isUsableSuitId`
+`buildSuitRow` `openSuitModal` `openSuitEditModal` `refreshSuitModal` `onAddSuit` `mergeLooseAndSuit` `mergeTags`。
+需要时临时在模块里打点，或从面板上点一遍（分类弹窗的 `保存` / `取消` / `删除分类`、
+套装一级弹窗的芯片与 `+ 新建套装`、二级弹窗的 `保存` / `取消` / `删除套装` 就是全部入口）。
 
 控制台会自己说话的地方：
 
@@ -638,7 +799,11 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 | 分类名 | 全局唯一（固定分类也参与查重） |
 | 备选表 | 只按**英文逗号**切分；中文逗号 / 顿号不是分隔符；去重保序 |
 | 选择顺序 | 恒按备选表的顺序（不存点击顺序） |
-| 写入 | 整文件覆盖写、无写队列；失败**回滚内存** + Toast（与推特那种「编辑 / 置顶只 toast」不同，这里五个编辑入口全走 `persistChange()`） |
+| 套装范围 | **只有 外 / 内 两组有套装**（「其他」是自定义分类，`part` 不在 `SUIT_PARTS` 就 `no-part`）；items 只能填该组的固定分类 |
+| 套装选择 | **同组互斥**（一组最多一套）、跨组独立、**与散装不互斥**（两者合并显示与注入） |
+| 套装名 | 只在**组内**唯一（两组可以同名） |
+| 套装 id | 由扩展生成（用户只填名字）；手改的 id 要过 §4.6 的 id 不变量，不合格就换新 id（条目保留） |
+| 写入 | 整文件覆盖写、无写队列；失败**回滚内存** + Toast（与推特那种「编辑 / 置顶只 toast」不同，这里分类五个 + 套装五个入口全走 `persistChange()`） |
 | 导入 / 导出 | **没有**（日记模块那套导入导出没有搬过来） |
 | 资源通道 | 依赖 `patches/st-twitter-assets.patch`，且服务端 `ALLOWED_SUBDIRS` 里必须有 `outfit`。**端点不存在**（404）→ `patch-missing`；**端点存在但白名单里没有 `outfit`**（400）→ 归一成 `sub-not-allowed`（§4.5）。两者**同级**：红字 + 两栏置灰，文案由 `outfitReasonText()` 给出「改白名单 + 重启酒馆主进程」的可照做指引；修好后**再点开一次面板就会自动重探**，不必 F5。**不回退**到别的位置 |
 | 运行时源注册时机 | `ensureOutfitRuntimeSource()` 只在预设切换路径上被调（`bootstrap()` / `APP_READY` 里没有，§1.5） |
@@ -650,7 +815,7 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 
 - **标签回写**：像状态栏那样解析回复里的衣装标签并更新 `picked` —— 数据层不用动（`togglePicked` 那套够用），
   难点是「允不允许模型改用户的选择」这个设计问题。
-- **按场景/时段多套**：现在一个会话只有一份 `picked`；要多套就得把第 3 行的 `picked` 换成命名集合，
+- **按场景/时段多套**：现在一个会话只有一份 `picked`（+ 两组各一份套装选择）；要多套就得把第 3 行的 `picked` 换成命名集合，
   并同步改 `normalizePicked()` / `encodeOutfitJsonl()` / `buildOutfitList()`。
 - **导入 / 导出**：`encodeOutfitJsonl()` 的输出本身就是可搬运的文本，缺的只是 UI。
 
@@ -666,6 +831,12 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 > 旧结构现在是按「**不存在**」断言的（`#roleEx-outfit-tags-*` / `.roleEx-outfit-group-head` /
 > `.roleEx-outfit-tags` 的 CSS 规则），所以别把它们当成漏测。
 
+> 0.11.0 又改了两件事（形态统一 + 套装子模型），**这一批断言正在同步重写**：
+> 行内按键按「`menu_button roleEx-btn-xs`、文案 `编辑`、靠右」断言，旧的 `.roleEx-outfit-cat-btn` 按**不存在**断言；
+> jsonl 从三行改成**四行**（`outfit-suits` 那一行 + 老文件缺行的降级）；
+> 套装那一批按两级弹窗 + `pickSuit` 互斥 + `套装=` 注入格式断言。
+> **重写完成之前脚本可能既报失败也可能中途抛错**（例如还引用着上一版结构的变量），以 `npm test` 的实际输出为准。
+
 - **面板结构**：清单第一条 = 主面板里的**第一块**；`#roleEx-outfit-section` 带 `roleEx-span-all` 且默认收起；
   正文的直接子节点恰好是 `[状态行, 两栏, 注入模板折叠块]`；
   两栏里 `#roleEx-outfit-preview` / `#roleEx-outfit-editor` 都在；注入模板折叠块默认收起
@@ -673,24 +844,54 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
   带 `#roleEx-outfit-fold-outer` / `-inner` / `-other`，**默认全部收起**（body 显式 `display:none`）；
   点 header 展开后 `rt.state.foldOpen[<key>]` 翻成 `true`，**重画后仍保持**（同一页面内）；
   「其他」组里是 `#roleEx-outfit-add-cat`，另两组没有它
-- **分类行只剩两个节点（0.10.1）**：`#roleEx-outfit-cat-<分类key>` 下只有
-  `.roleEx-outfit-cat-name` + `.roleEx-outfit-cat-btn#roleEx-outfit-edit-<分类key>`（文案就是 `编辑`，固定分类也有）；
-  旧版的**行内**节点 `#roleEx-outfit-tags-*` / `#roleEx-outfit-chips-*` / `#roleEx-outfit-rename-*` /
-  `#roleEx-outfit-del-*` **都不再存在**（断言按「不存在」钉）
-- **预览区（0.10.1）**：CSS 规则里 `#roleEx-outfit-preview` 是 `flex: 0 0 55%` + `min-height: 12em`
-  （自测读的是 `style.css` 文本，值逐字比对）
-- **分类编辑弹窗（0.10.1）**：点 `编辑` 后 `document.body` 下出现 `.roleEx-modal#roleEx-outfit-modal`，
-  里面依次是 `.roleEx-modal-head`（`编辑「<分类名>」`）、`.roleEx-outfit-modal-field`（名称，**只有自定义分类才有**）、
+- **分类行 / 套装行（0.11.0）**：`#roleEx-outfit-cat-<分类key>` 与 `#roleEx-outfit-cat-suit-<部分key>` 下都只有
+  `.roleEx-outfit-cat-name` + `.menu_button.roleEx-btn-xs`（文案 `编辑`；id 分别是
+  `#roleEx-outfit-edit-<分类key>` / `#roleEx-outfit-suit-edit-<部分key>`）；**套装行只出现在 outer / inner 组**
+  且是该组 body 的**第一行**；`.roleEx-outfit-cat-btn` 与旧的行内节点
+  `#roleEx-outfit-tags-*` / `#roleEx-outfit-chips-*` / `#roleEx-outfit-rename-*` / `#roleEx-outfit-del-*`
+  **都不再存在**（断言按「不存在」钉）
+- **预览区（0.10.1 / 0.11.0）**：CSS 里 `#roleEx-outfit-preview` 是 `flex: 0 0 55%` + `min-height: 12em`，
+  `.roleEx-outfit-cat-name` 与 `.roleEx-outfit-preview-name` 都是 `flex: 0 0 13em`
+  （自测读的是 `style.css` 文本，值逐字比对）；
+  **预览的多一行**：outer / inner 组的第一行是 `套装：`（`#roleEx-outfit-preview-list` 里），
+  未选时值是「未选」且带 `.is-empty`；分类行的值 = 散装 + 套装项去重后的合并
+- **分类编辑弹窗（0.10.1 / 0.11.0）**：点 `编辑` 后 `document.body` 下出现 `.roleEx-modal#roleEx-outfit-modal`，
+  里面依次是 `.roleEx-modal-head`（`编辑「<分类名>」` + 右上角 `i.fa-solid.fa-xmark.menu_button.roleEx-btn-xs`）、
+  `.roleEx-outfit-modal-field`（名称，**只有自定义分类才有**）、
   `.roleEx-outfit-modal-field`（备选：`#roleEx-outfit-modal-tags` + 「用英文逗号分隔」提示）、
   芯片行 `#roleEx-outfit-modal-chips`（备选非空时）/ `.roleEx-hint`「先在上面填备选 tag」（备选为空时）、
-  以及三个按钮 `#roleEx-outfit-modal-save` / `-cancel` / `-del`（`-del` 只有自定义分类才有）；
-  同一时刻只允许一个弹窗（重开先 `remove()` 同名旧节点）
+  以及底部 `.roleEx-row.roleEx-gap.roleEx-end` 里的 `#roleEx-outfit-modal-del`（`.roleEx-danger`，只有自定义分类才有）→
+  `-cancel` → `-save`；同一时刻只允许一个弹窗（重开先 `remove()` 同名旧节点）
 - **弹窗里的行为**：点芯片 → `togglePicked()` 立即落盘（成功才加/去 `.is-on`）、失败时 DOM 不动；
   `保存`：名称改了才 `renameCustomCategory()`、备选变了才 `setCategoryTags()`，**两步都成功才关窗重画**，
   失败停在弹窗里；空名 → Toast `名称不能为空`（不写盘）、重名 → Toast `已有同名分类`（不写盘）、
   两步都没变化 → 直接关窗（不产生写盘）；
-  `取消`：只 `remove()` 弹窗、**零写盘**（但**不回滚**已点过的芯片）；
+  `取消` / `×`：只 `remove()` 弹窗、**零写盘**（但**不回滚**已点过的芯片）；
   `删除分类`：有 `confirm()`，确认后才 `removeCustomCategory()`，成功才关窗重画
+- **套装：一级弹窗（0.11.0）**：点套装行的 `编辑` → `.roleEx-modal#roleEx-outfit-suit-modal`，
+  head 是 `套装（外）` / `套装（内）`；列表 `#roleEx-outfit-suit-list` 里每行
+  `.roleEx-outfit-suit-row#roleEx-outfit-suit-row-<套装id>` = `.roleEx-outfit-suit-name` +
+  `.roleEx-outfit-suit-edit-<套装id>`（`编辑`）+ 一颗 `.roleEx-outfit-chip`（文本 = 套装名）；
+  没有任何套装时是 `.roleEx-hint`「还没有套装，点下面的「+ 新建套装」加一个。」；
+  底部 `.roleEx-row.roleEx-gap.roleEx-end` 里是 `#roleEx-outfit-suit-add`（`+ 新建套装`）
+- **套装：二级弹窗（0.11.0）**：点某一行的 `编辑` → `.roleEx-modal#roleEx-outfit-suit-edit-modal`
+  （**一级仍存在**，两窗同时挂着）；head 是 `编辑套装` + `×`；
+  字段 `#roleEx-outfit-suit-name` + 按 `SUIT_ITEMS_BY_PART` 顺序的
+  `#roleEx-outfit-suit-item-<分类key>`（外 5 格 / 内 2 格，值是逗号连接的原文）；
+  底部 `#roleEx-outfit-suit-del`（`.roleEx-danger`，`删除套装`）→ `#roleEx-outfit-suit-cancel` → `#roleEx-outfit-suit-save`
+- **套装：行为（0.11.0）**：新建走 `prompt`，空名取消、同组重名 → Toast `已有同名套装`（不写盘）；
+  一级里点芯片 = `pickSuit()`（**同组互斥**：点另一颗就把 `is-on` 换过去；再点当前那颗 = 取消），
+  点完只刷新这一级弹窗的芯片 + `renderOutfit()`；
+  二级 `保存`：空名 → Toast `套装名不能为空`、同组重名 → Toast `已有同名套装`（都不写盘不关窗），
+  否则先改名（变了才写）再一次性提交 items，全成功才关窗 → **一级列表就地重刷**（`refreshSuitModal()`）→ 面板重画；
+  二级 `删除套装`：`confirm('删除套装「<名>」？')`，成功后同样关窗 + 刷新一级；删掉的正是该组已选中的那套时该组已选清空；
+  二级 `取消` / `×` 只关二级，一级不受影响
+- **套装：存储与归一（0.11.0）**：jsonl **四行**，第 4 行 `__roleExpansion = 'outfit-suits'`
+  （`suits.outer` / `suits.inner` + `picked.outer` / `picked.inner`）；老文件缺第 4 行 → 空套装表、**不计数坏行**；
+  手改的 id 不合规 / 同组重复 → 现场换新 id 而**条目保留**；不同 part 允许同名 id；
+  `picked[part]` 指向不存在的套装 → 置 `''`；编码器落盘前会再跑一次 `normalizeSuits()`
+- **注入（0.11.0）**：选中套装时该组行首是 `套装=<名>`（没选则整段不出现）；
+  分类值 = 散装在前 + 套装项在后 + 去重；示例口径 `外：套装=通勤装；头饰=贝雷帽；上衣=大衣 / 白衬衫；鞋子=帆布鞋`
 - **芯片选中态（0.10.1）**：CSS 规则里 `.roleEx-outfit-chip.is-on` 是
   `color: var(--SmartThemeQuoteColor, #e0b000)` + `border-color: currentColor` + `background-color: var(--black30a)`
   （**背景与未选态一致**，断言不会把 `.is-on` 当成实底高亮）
@@ -701,11 +902,12 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
   提交是整表替换；连带清掉不在新表里的已选 tag
 - **选择**：分类内多选；顺序恒按备选表（与点击先后无关）；写盘 → 读回保持一致
 - **存储**：文件名是单段 ASCII、带 `RoleExpansion_outfit_` 前缀、双 hash、以 `.jsonl` 结尾、换会话换文件；
-  落盘是稳定的三行（`outfit-session` / `outfit-catalog` / `outfit-selection`）；
+  落盘是稳定的**四行**（`outfit-session` / `outfit-catalog` / `outfit-selection` / `outfit-suits`）；
   落点文案 = 角色聊天目录下的 `_RoleExpansion/outfit/`；走 `/api/role-expansion/asset` 且 `sub = 'outfit'`
 - **归一化**：固定分类补齐；未知固定 key 丢掉；`picked` 里不在 catalog 里的 key 与不在备选表里的 tag 丢掉；
   坏行被计数并给出「已跳过 N 行」提示
-- **注入**：`{{outfitList}}` 被填进模板；分组清单是「每部分一行、`分类名=a / b`、行内 `；`、空部分整行不出现」；
+- **注入**：`{{outfitList}}` 被填进模板；分组清单是「每部分一行、选中套装时行首先 `套装=<名>`、
+  各 `分类名=a / b` 用 `；` 连接、空部分整行不出现」；
   一个都没选 → 空串；三道闸各自生效（没插进 order / `enabled === false` / 没选）
 - **不可用路径**：
   - 群聊 → `reason = 'group'` + 红字 + **不发任何资源请求**；没选角色 → 状态行**不带** `roleEx-warn`；

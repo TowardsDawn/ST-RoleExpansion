@@ -12,10 +12,10 @@
 | --- | --- |
 | 是什么 | SillyTavern 前端扩展：**衣装打扮（Outfit）** + **角色状态栏（State）** + **日记（Journal）** + **推特（Twitter）** |
 | 形态 | 纯前端原生 ESM，**没有任何构建步骤** —— `index.js` 由酒馆直接 `import`；四个功能都是 `modules/` 下的**可拆模块**（§1.1） |
-| 代码规模 | 框架 `index.js` ≈ 1834 行；模块 ≈ 6316 行（outfit 1569 / twitter 2294 / journal 1837 / state 616）、`style.css` ≈ 931 行、`index.html` 51 行 —— 都是 `(Get-Content <文件>).Count` 的实测值（含空行与注释） |
+| 代码规模 | 框架 `index.js` ≈ 1863 行；模块 ≈ 7179 行（outfit 2429 / twitter 2297 / journal 1837 / state 616）、`style.css` ≈ 960 行、`index.html` 52 行 —— 都是 `(Get-Content <文件>).Count` 的实测值（含空行与注释） |
 | 运行前提 | SillyTavern ≥ 1.18.0（**1.19.0 已复验**，补丁能干净落地）**且**已应用 `patches/` 下的三份补丁（`st-marker-prompt` → `st-journal-store` → `st-twitter-assets`，顺序不能反） |
 | 后端 | 无自有后端。持久化 = `chatMetadata`（状态） + 补丁新增的 `/api/role-expansion/journal/*`（日记 jsonl）与 `/api/role-expansion/asset/*`（模块私有子目录：推特 jsonl + 头像 / 横幅 / 本地配图、衣装 jsonl；URL 媒体只存地址，不落盘） |
-| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 632 项断言）；`npm run test:patch` 另跑两份补丁端点 |
+| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 718 项断言）；`npm run test:patch` 另跑两份补丁端点 |
 
 接手时最该先搞明白的三件事：
 
@@ -59,9 +59,9 @@ index.js                       框架：kernel + 抽屉/主面板/扩展设置�
 modules/manifest.json          **模块清单**（唯一的「有哪些模块」的真相），框架用 fetch 读它
                                **modules[] 的顺序 = 主面板区块顺序**：outfit → state → journal → twitter
 modules/outfit/index.js        描述符（id/title/icon/defaults）+ 组装 + 两个框架钩子（buildPanelSection / settingsBlock）
-                 store.js      会话身份与 jsonl 编解码 + 分类/tag 模型 + 可用性判定（资源通道，sub = outfit）
+                 store.js      会话身份与 jsonl 编解码（四行）+ 分类/tag 模型 + **套装模型** + 可用性判定（资源通道，sub = outfit）
                  inject.js     运行时正文源 + marker 卡片（只读关联、诊断）—— 照 journal 复制改名
-                 ui.js         衣装面板（状态行 + 左右两栏 + 注入模板折叠块）
+                 ui.js         衣装面板（状态行 + 左右两栏 + 三个分类折叠块 + 三层弹窗：分类编辑 / 套装一级 / 套装二级）
 modules/state/index.js         描述符 + 组装
                store.js        chatMetadata 读写（按会话隔离）
                inject.js      状态注入 + <名称>值</名称> 标签解析
@@ -568,13 +568,13 @@ write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也�
 | 多扩展冲突 | 运行时提示词源的 `identifier` 由各模块自己定（日记是 `roleExpansionJournal`、衣装是 `roleExpansionOutfit`）；与另一个用同一 identifier 的扩展会撞 |
 | i18n | 界面文案全是硬编码简体中文，没走酒馆的 `t()` |
 | 框架不做跨模块状态容器 | 模块之间**只**走 `kernel.service('<id>')`，对方不在时取安全缺省；框架不提供事件总线、也不替模块存数据 |
-| 模块自身的限制与预留点 | 见各模块文档的「已知限制」（衣装：群聊不支持、只有单向注入、固定分类不可改名删除、没有导入导出…；推特：固定高度一屏、群聊不支持、FLV 不支持、URL 媒体不落盘、数字没有范围校验…；日记：群聊不支持、改名边界、隔离通道只剥成块写的推理…；状态：标签准入、新聊天状态为空…） |
+| 模块自身的限制与预留点 | 见各模块文档的「已知限制」（衣装：群聊不支持、只有单向注入、固定分类不可改名删除、**套装只属于外 / 内两组且同组互斥**、没有导入导出…；推特：固定高度一屏、群聊不支持、FLV 不支持、URL 媒体不落盘、数字没有范围校验…；日记：群聊不支持、改名边界、隔离通道只剥成块写的推理…；状态：标签准入、新聊天状态为空…） |
 ## 9. 快速自检清单
 
 改动之后，按这个顺序过一遍：
 
 - [ ] `node --check index.js` —— 语法
-- [ ] `npm test` —— 断言数是否还是 632（或你确实改过断言数；这个数字同时写在 `.github/workflows/smoke-test.yml` 的注释里，改了要一起同步）；改了补丁端点再跑一次 `npm run test:patch`
+- [ ] `npm test` —— 断言数是否还是 718（或你确实改过断言数；这个数字同时写在 `.github/workflows/smoke-test.yml` 的注释里，改了要一起同步）；改了补丁端点再跑一次 `npm run test:patch`
 - [ ] 动了模块系统：把 `modules/<id>/` 挪走再跑一次 `npm test`（框架部分应当照常，模块相关断言会红），
       并在酒馆里确认「面板少一块 + 别的功能照常 + 控制台只多一行 info」
 - [ ] 涉及 UI 的改动：`Ctrl+F5` 后在酒馆里实际点一遍（自测的 DOM 是 stub，覆盖不到视觉）

@@ -1596,6 +1596,13 @@ check('管理列表里有「编辑」按钮', !!editButton, true);
 editButton?.click();
 const modal = (document.body.children || []).find(node => String(node.className).includes('roleEx-modal'));
 check('点「编辑」弹出编辑弹窗', !!modal, true);
+check('推文弹窗的 head 也统一成了 span(标题) + i.fa-xmark（与衣装 / 日记弹窗同款）',
+    (() => {
+        const head = allNodes(modal, n => String(n?.className || '').includes('roleEx-modal-head'))[0];
+        return (head?.children || []).length === 2
+            && String(head.children[0]?.tagName) === 'SPAN'
+            && String(head.children[1]?.className || '').includes('fa-xmark');
+    })(), true);
 const statInput = (key) => allNodes(modal, n => n?.dataset?.twitterStat === key)[0];
 const modalTextarea = allNodes(modal, n => String(n.tagName) === 'TEXTAREA')[0];
 check('弹窗里有五个数字输入框（评论 / 转帖 / 喜欢 / 书签 / 浏览）',
@@ -2141,20 +2148,35 @@ check('三个折叠块都默认收起（body 显式 display:none）',
     ofE0New.map(f => f?.children?.[1]?.style?.display).join(','), 'none,none,none');
 const ofFoldBodies = ofE0New.map(f => f?.children?.[1]);
 const ofRowsIn = (body) => (body?.children || []).filter(c => String(c.id).startsWith('roleEx-outfit-cat-'));
-const ofFixedRows = ofFoldBodies.flatMap(ofRowsIn);
-check('每组的分类行数 = 外 5 / 内 2 / 其他 0 （其他组此刻只有新建按钮）',
-    ofFoldBodies.map(b => ofRowsIn(b).length).join(','), '5,2,0');
+/** 分类行（排除套装行：套装行的 id 是 #roleEx-outfit-cat-suit-<part>） */
+const ofCatRowsIn = (body) => ofRowsIn(body).filter(c => !String(c.id).includes('-suit-'));
+const ofSuitRowsIn = (body) => ofRowsIn(body).filter(c => String(c.id).includes('-suit-'));
+check('外 / 内 折叠块的 body **第一行**是套装行，「其他」块里没有套装行',
+    [String(ofFoldBodies[0]?.children?.[0]?.id), String(ofFoldBodies[1]?.children?.[0]?.id),
+        ofSuitRowsIn(ofFoldBodies[2]).length].join(' | '),
+    'roleEx-outfit-cat-suit-outer | roleEx-outfit-cat-suit-inner | 0');
+check('套装行与分类行同形：名称 span「套装」+ div.menu_button.roleEx-btn-xs#roleEx-outfit-suit-edit-<part>',
+    ofSuitRowsIn(ofFoldBodies[0]).concat(ofSuitRowsIn(ofFoldBodies[1])).every(r => (r.children || []).length === 2
+        && String(r.children[0]?.textContent) === '套装'
+        && String(r.children[1]?.tagName) === 'DIV'
+        && String(r.children[1]?.id) === 'roleEx-outfit-suit-edit-' + String(r.id).replace('roleEx-outfit-cat-suit-', '')
+        && ofClass(r.children[1]).includes('menu_button') && ofClass(r.children[1]).includes('roleEx-btn-xs')
+        && String(r.children[1]?.textContent) === '编辑'), true);
+check('每组的分类行数（不含套装行）= 外 5 / 内 2 / 其他 0',
+    ofFoldBodies.map(b => ofCatRowsIn(b).length).join(','), '5,2,0');
+const ofFixedRows = ofFoldBodies.flatMap(ofCatRowsIn);
 check('7 个固定分类行 id 齐全且顺序固定',
     ofFixedRows.map(r => String(r.id)).join(','),
     ['hat', 'top', 'bottom', 'socks', 'shoes', 'underwear', 'underpants'].map(k => 'roleEx-outfit-cat-' + k).join(','));
-check('每个分类行的直接子节点恰好 2 个 = 名称 span + 编辑 按钮 span',
+check('每个分类行的直接子节点恰好 2 个 = 名称 span + 「编辑」按钮 div',
     ofFixedRows.every(r => (r.children || []).length === 2
         && String(r.children[0]?.tagName) === 'SPAN' && ofClass(r.children[0]).includes('roleEx-outfit-cat-name')
-        && String(r.children[1]?.tagName) === 'SPAN' && ofClass(r.children[1]).includes('roleEx-outfit-cat-btn')), true);
-check('编辑 按钮的 id / title / 文案都符合契约',
+        && String(r.children[1]?.tagName) === 'DIV' && ofClass(r.children[1]).includes('menu_button')), true);
+check('「编辑」按钮的 id / class / title / 文案都符合契约',
     ofFixedRows.every(r => {
         const btn = r.children[1];
         return String(btn.id) === 'roleEx-outfit-edit-' + String(r.id).replace('roleEx-outfit-cat-', '')
+            && ofClass(btn).includes('roleEx-btn-xs')
             && String(btn.title) === '编辑这个分类的备选 tag'
             && String(btn.textContent) === '编辑';
     }), true);
@@ -2186,11 +2208,17 @@ api.renderOutfit();
 check('再点一次收起（还原现场）', ofFoldDisplay('inner'), 'none');
 
 const ofRows0 = ofPreviewRows(ofP0New);
-check('预览每个分类一行（7 个固定分类 = 7 行）', ofRows0.length, 7);
+check('预览行 = 2 条套装行 + 7 条分类行', ofRows0.length, 9);
 check('预览行 = span.roleEx-outfit-preview-name（文本以「：」结尾）+ span.roleEx-outfit-preview-value',
     ofRows0.every(r => ofClass(r.children?.[0]).includes('roleEx-outfit-preview-name')
         && ofClass(r.children?.[1]).includes('roleEx-outfit-preview-value')
         && String(r.children?.[0]?.textContent).endsWith('：')), true);
+check('外 / 内 两组各自的**第一行**是套装行（name = 「套装：」）',
+    [ofRows0[0], ofRows0[6]].map(r => String(r?.children?.[0]?.textContent)).join('|'), '套装：|套装：');
+check('套装行未选时：value 文本「未选」且带 is-empty',
+    [ofRows0[0], ofRows0[6]].every(r => r.children?.[1]?.textContent === '未选' && ofHasClass(r.children[1], 'is-empty')), true);
+check('「其他」组里没有套装行（整份预览里只有 2 条）',
+    ofRows0.filter(r => String(r.children?.[0]?.textContent) === '套装：').length, 2);
 check('未选时 is-empty 加在 value 上（不是加在 row 上）、文本是「未选」',
     ofRows0.every(r => ofHasClass(r.children?.[1], 'is-empty') && r.children?.[1]?.textContent === '未选')
     && ofRows0.every(r => ofHasClass(r, 'is-empty') === false), true);
@@ -2217,7 +2245,9 @@ const ofSavedPrompt = globalThis.prompt;
 const ofSavedConfirm = globalThis.confirm;
 /** 此刻 body 上有没有分类编辑弹窗（弹窗是一次性的：关掉即从 body 摘掉） */
 const ofModalInBody = () => (document.body.children || []).find(n => ofHasClass(n, 'roleEx-modal'));
-/** 点某分类行的 编辑 打开弹窗（openCategoryModal 是同步的，点完就在 body 上） */
+/** 按 id 在 body 上找弹窗：⚠️ 关掉的弹窗在 registry 里还留着旧节点，判断「关没关」只能看 body */
+const ofModalInBodyById = (id) => (document.body.children || []).find(n => String(n?.id) === id) || null;
+/** 点某分类行的「编辑」打开弹窗（openCategoryModal 是同步的，点完就在 body 上） */
 const ofOpenCatModal = (key) => {
     registry.get('roleEx-outfit-edit-' + key)?.click();
     return ofModalInBody();
@@ -2227,12 +2257,18 @@ const ofModalEl = (id) => registry.get(id) || null;
 
 // ① 固定分类「上衣」：备选表还空着 → 弹窗用一句提示顶替芯片行
 const ofModalTop = ofOpenCatModal('top');
-check('点 编辑 打开分类编辑弹窗（.roleEx-modal#roleEx-outfit-modal，挂 document.body）',
+check('点「编辑」打开分类编辑弹窗（.roleEx-modal#roleEx-outfit-modal，挂 document.body）',
     String(ofModalTop?.id) === 'roleEx-outfit-modal' && ofModalEl('roleEx-outfit-modal') === ofModalTop, true);
 const ofModalInner = ofModalTop?.children?.[0];
 check('弹窗内层是 .roleEx-modal-inner，第一行是 .roleEx-modal-head',
     ofHasClass(ofModalInner, 'roleEx-modal-inner') && ofHasClass(ofModalInner?.children?.[0], 'roleEx-modal-head'), true);
-check('弹窗标题 = 编辑「上衣」', ofModalInner?.children?.[0]?.textContent, '编辑「上衣」');
+check('弹窗 head = span(标题) + i.fa-solid.fa-xmark.menu_button.roleEx-btn-xs',
+    (ofModalInner?.children?.[0]?.children || []).length === 2
+    && String(ofModalInner?.children?.[0]?.children?.[0]?.tagName) === 'SPAN'
+    && ofClass(ofModalInner?.children?.[0]?.children?.[1]).includes('fa-xmark')
+    && ofClass(ofModalInner?.children?.[0]?.children?.[1]).includes('menu_button')
+    && ofClass(ofModalInner?.children?.[0]?.children?.[1]).includes('roleEx-btn-xs'), true);
+check('弹窗标题文本 = 编辑「上衣」', ofModalInner?.children?.[0]?.children?.[0]?.textContent, '编辑「上衣」');
 check('固定分类的弹窗里没有名称输入框（不可改名）', ofModalEl('roleEx-outfit-modal-name'), null);
 check('备选行的标签是 .roleEx-hint.roleEx-inline-label「备选」',
     ofHasClass(ofModalInner?.children?.[1]?.children?.[0], 'roleEx-inline-label')
@@ -2244,18 +2280,29 @@ check('备选表为空时不建芯片容器，改为一句「先在上面填备�
     ofModalEl('roleEx-outfit-modal-chips') === null
     && allNodes(ofModalInner, n => String(n?.textContent) === '先在上面填备选 tag').length === 1, true);
 check('固定分类的弹窗里没有「删除分类」', ofModalEl('roleEx-outfit-modal-del'), null);
-check('弹窗底部是「保存」与「取消」两个按钮',
-    [ofModalEl('roleEx-outfit-modal-save')?.textContent, ofModalEl('roleEx-outfit-modal-cancel')?.textContent].join(','),
-    '保存,取消');
-check('「保存 / 取消」都在 .roleEx-row.roleEx-wrap 里',
-    ofHasClass(ofModalEl('roleEx-outfit-modal-save')?.parentElement, 'roleEx-row')
-    && ofHasClass(ofModalEl('roleEx-outfit-modal-save')?.parentElement, 'roleEx-wrap'), true);
+const ofModalActions = ofModalEl('roleEx-outfit-modal-save')?.parentElement;
+check('弹窗底部 = .roleEx-row.roleEx-gap.roleEx-end（右对齐那一档）',
+    ofHasClass(ofModalActions, 'roleEx-row') && ofHasClass(ofModalActions, 'roleEx-gap')
+    && ofHasClass(ofModalActions, 'roleEx-end'), true);
+check('固定分类底部只有 取消 → 保存（顺序固定）',
+    ofModalActions?.children?.map(c => String(c.id)).join(','),
+    'roleEx-outfit-modal-cancel,roleEx-outfit-modal-save');
+check('两个按钮的 class 都是 menu_button roleEx-btn',
+    (ofModalActions?.children || []).every(c => ofClass(c).includes('menu_button') && ofClass(c).includes('roleEx-btn')), true);
+// × ＝ 只关窗、零写盘（未保存的改动丢掉）
+const ofRawBeforeX = ofJsonl();
+registry.get('roleEx-outfit-modal-tags').value = '改了但不保存';
+ofModalInner?.children?.[0]?.children?.[1]?.click();
+await ofTick();
+check('点 head 里的 × → 关窗', ofModalInBodyById('roleEx-outfit-modal'), null);
+check('× 零写盘（文件一字未改）', ofJsonl() === ofRawBeforeX, true);
 
 // ② 保存备选表（输入含重复项）→ 去重落盘 + 关窗
+ofOpenCatModal('top');
 registry.get('roleEx-outfit-modal-tags').value = '白衬衫,大衣,白衬衫';
 registry.get('roleEx-outfit-modal-save').click();
 await ofTick();
-check('保存后弹窗关闭', !!ofModalInBody(), false);
+check('保存后弹窗关闭', ofModalInBodyById('roleEx-outfit-modal'), null);
 check('落盘 key = outfit|<文件名>（RoleExpansion_outfit_c_<8位>_j_<8位>.jsonl）',
     /^outfit\|RoleExpansion_outfit_c_[0-9a-f]{8}_j_[0-9a-f]{8}\.jsonl$/.test(ofJsonlKey() || ''), true);
 check('jsonl 里的备选表去重（白衬衫,大衣）',
@@ -2317,12 +2364,19 @@ check('新分类落在「其他」部分并已落盘（part: other / custom: tru
 // ⑥ 自定义分类的弹窗多出「名称」行与「删除分类」
 ofOpenCatModal(ofCustomKey);
 const ofInnerCustom = ofModalInBody()?.children?.[0];
-check('自定义分类的弹窗标题 = 编辑「武器」', ofInnerCustom?.children?.[0]?.textContent, '编辑「武器」');
+check('自定义分类的弹窗标题文本 = 编辑「武器」', ofInnerCustom?.children?.[0]?.children?.[0]?.textContent, '编辑「武器」');
 check('名称行的标签是 .roleEx-hint.roleEx-inline-label「名称」，输入框预填当前名',
     ofHasClass(ofInnerCustom?.children?.[1]?.children?.[0], 'roleEx-inline-label')
     && String(ofInnerCustom?.children?.[1]?.children?.[0]?.textContent) === '名称'
     && ofModalEl('roleEx-outfit-modal-name')?.value === '武器', true);
 check('自定义分类的弹窗有「删除分类」按钮', ofModalEl('roleEx-outfit-modal-del')?.textContent, '删除分类');
+const ofCustomActions = ofModalEl('roleEx-outfit-modal-save')?.parentElement;
+check('自定义分类底部顺序 = 删除分类 → 取消 → 保存',
+    ofCustomActions?.children?.map(c => String(c.id)).join(','),
+    'roleEx-outfit-modal-del,roleEx-outfit-modal-cancel,roleEx-outfit-modal-save');
+check('三个按钮 class 都是 menu_button roleEx-btn，「删除分类」带 roleEx-danger',
+    (ofCustomActions?.children || []).every(c => ofClass(c).includes('menu_button') && ofClass(c).includes('roleEx-btn'))
+    && ofHasClass(ofModalEl('roleEx-outfit-modal-del'), 'roleEx-danger'), true);
 
 // ⑦ 保存时名称 trim 为空 → toast + 不写盘 + 不关窗
 toasts.length = 0;
@@ -2413,10 +2467,20 @@ check('新建重名弹 error toast',
 globalThis.prompt = ofSavedPrompt;
 globalThis.confirm = ofSavedConfirm;
 
-// ---- 3. 落盘（jsonl 三行结构）----
-check('jsonl 三行结构：会话头 / 分类表 / 选择表',
+// ---- 3. 落盘（jsonl 恒为四行：前三行是原契约，第 4 行是套装）----
+check('jsonl 恒为四行：会话头 / 分类表 / 选择表 / 套装表',
     ofJsonl().trim().split('\n').map(l => JSON.parse(l).__roleExpansion).join(','),
-    'outfit-session,outfit-catalog,outfit-selection');
+    'outfit-session,outfit-catalog,outfit-selection,outfit-suits');
+check('前三行的字段与顺序不变（会话头 / 分类表 / 选择表）',
+    ofLines().slice(0, 3).map(o => Object.keys(o).join(',')).join(' | '),
+    '__roleExpansion,version,chatId,charDir,chatFile,savedAt'
+    + ' | __roleExpansion,categories,updatedAt'
+    + ' | __roleExpansion,picked,updatedAt');
+check('第 4 行（套装表）字段与形状：suits / picked 都按 外 / 内 两组给键',
+    [Object.keys(ofLine('outfit-suits')).join(','),
+        Object.keys(ofLine('outfit-suits').suits || {}).join(','),
+        Object.keys(ofLine('outfit-suits').picked || {}).join(',')].join(' | '),
+    '__roleExpansion,suits,picked,updatedAt | outer,inner | outer,inner');
 check('分类表里 7 个固定分类齐全，part 分别是 outer / inner',
     (ofLine('outfit-catalog').categories || []).filter(c => c.custom !== true).map(c => c.key + ':' + c.part).join(','),
     'hat:outer,top:outer,bottom:outer,socks:outer,shoes:outer,underwear:inner,underpants:inner');
@@ -2456,7 +2520,10 @@ check('归一化：不在备选表里的已选 tag 被丢掉（头饰仍是「�
 check('归一化：备选表里确实存在的那个保留（上衣：白衬衫）',
     ofBrokenRows.find(r => r.children?.[0]?.textContent === '上衣：')?.children?.[1]?.textContent, '白衬衫');
 check('归一化后只剩 7 个固定分类（没有任何自定义残留）',
-    ofBrokenBodies.flatMap(ofRowsIn).length, 7);
+    ofBrokenBodies.flatMap(ofCatRowsIn).length, 7);
+check('归一化后套装行照样在（外 / 内 各一行，不算分类行）',
+    ofBrokenBodies.flatMap(ofSuitRowsIn).map(r => String(r.id)).join(','),
+    'roleEx-outfit-cat-suit-outer,roleEx-outfit-cat-suit-inner');
 
 // ---- 4. 预设注入（marker 卡片）----
 check('注册运行时正文源：走框架桥接壳 ensureOutfitRuntimeSource() 并返回 true',
@@ -2489,6 +2556,9 @@ await ofTick();
 ofOpenCatModal('shoes');
 ofModalEl('roleEx-outfit-modal-chips')?.children?.[0]?.click();
 await ofTick();
+// 收尾：把这个弹窗关掉（后面的用例不该带着一个开着的弹窗跑）
+ofModalEl('roleEx-outfit-modal-cancel')?.click();
+check('收尾：分类弹窗已关（后面的用例不受影响）', ofModalInBodyById('roleEx-outfit-modal'), null);
 const ofInjected = ofSource();
 check('闸④：有选中 → 渲染注入模板（{{outfitList}} 被换成「外：鞋子=短靴」）',
     ofInjected.includes('外：鞋子=短靴') && ofInjected.includes('{{outfitList}}') === false, true);
@@ -2610,8 +2680,343 @@ check('衣装：源码里没有自己拼 fetch（走框架的资源通道）', o
 check('衣装：源码里没有 <script', ofModuleSrc.includes('<script'), false);
 check('衣装：源码里没有 setExtensionPrompt（注入完全交给预设卡片）', ofModuleSrc.includes('setExtensionPrompt'), false);
 check('衣装：源码里没有 presets/save（对预设只读）', ofModuleSrc.includes('presets/save'), false);
+check('衣装：源码里已经没有 .roleEx-outfit-cat-btn（行内小图标那套已拆掉）',
+    ofModuleSrc.includes('roleEx-outfit-cat-btn'), false);
+check('衣装：套装的两个弹窗与行内入口都落在 ui.js 里（id 契约在源码里可查）',
+    ['roleEx-outfit-suit-modal', 'roleEx-outfit-suit-edit-modal', 'roleEx-outfit-suit-add',
+        'roleEx-outfit-suit-row-', 'roleEx-outfit-cat-suit-'].every(id => ofModuleSrc.includes(id)), true);
 
-// ---- 8. 降级与可用性 ----
+// ---- 8. 套装（外 / 内 子模型）：一级弹窗 / 二级弹窗 / 预览合并 / 落盘 / 回滚 ----
+// 现场：第 4 节结束时 top 的备选表被清空、shoes 的备选表 = ['短靴'] 且已选中，套装还是空的。
+const ofSavedPromptSuit = globalThis.prompt;
+const ofSavedConfirmSuit = globalThis.confirm;
+const ofSuitBody = (part) => registry.get('roleEx-outfit-fold-' + part)?.children?.[1];
+/** 面板里的套装行按钮：从折叠块 body 直接取，避开弹窗里 #roleEx-outfit-suit-edit-<suitId> 的同形 id */
+const ofSuitRowBtn = (part) => ofSuitRowsIn(ofSuitBody(part))[0]?.children?.[1] || null;
+const ofSuits = () => ofLine('outfit-suits').suits || {};
+const ofSuitPicked = () => ofLine('outfit-suits').picked || {};
+const ofSuitsOf = (part) => ofSuits()[part] || [];
+const ofSuitByName = (part, name) => ofSuitsOf(part).find(s => s.name === name) || null;
+const ofSuitListEl = () => ofModalEl('roleEx-outfit-suit-list');
+/**
+ * 一级弹窗列表「最新一次渲染」的行。⚠️ stub 的 textContent='' 不清子节点，列表是累加的，
+ * 而每次渲染按当前套装数往后追加 n 行 —— 所以取尾部 n 个（n 从落盘里的套装数来）。
+ * 只有这样拿到的节点才是「当前那批」：芯片点击处理器里操作的是**最近一次渲染**的那组芯片。
+ */
+const ofSuitListLastRender = (part) => {
+    const n = ofSuitsOf(part).length;
+    return n ? (ofSuitListEl()?.children || []).slice(-n) : [];
+};
+const ofSuitRowByName = (part, name) => ofSuitListLastRender(part)
+    .find(r => String(r.children?.[0]?.textContent) === name) || null;
+
+// ① 一级弹窗：空列表用一句提示顶替
+ofSuitRowBtn('outer')?.click();
+const ofSuitModal = ofModalInBodyById('roleEx-outfit-suit-modal');
+check('点套装行的「编辑」→ 一级弹窗 #roleEx-outfit-suit-modal 挂 body',
+    String(ofSuitModal?.id), 'roleEx-outfit-suit-modal');
+const ofSuitInner = ofSuitModal?.children?.[0];
+check('一级弹窗 head = span「套装（外）」+ i.fa-xmark（与分类弹窗同款）',
+    String(ofSuitInner?.children?.[0]?.children?.[0]?.textContent) === '套装（外）'
+    && ofClass(ofSuitInner?.children?.[0]?.children?.[1]).includes('fa-xmark')
+    && ofClass(ofSuitInner?.children?.[0]?.children?.[1]).includes('roleEx-btn-xs'), true);
+check('空列表时是含「还没有套装」的 .roleEx-hint',
+    ofLen(ofSuitListEl()) === 1 && ofHasClass(ofSuitListEl()?.children?.[0], 'roleEx-hint')
+    && String(ofSuitListEl()?.children?.[0]?.textContent).includes('还没有套装'), true);
+check('一级弹窗底部 = .roleEx-row.roleEx-gap.roleEx-end 里的 #roleEx-outfit-suit-add（+ 新建套装）',
+    ofHasClass(ofModalEl('roleEx-outfit-suit-add')?.parentElement, 'roleEx-row')
+    && ofHasClass(ofModalEl('roleEx-outfit-suit-add')?.parentElement, 'roleEx-gap')
+    && ofHasClass(ofModalEl('roleEx-outfit-suit-add')?.parentElement, 'roleEx-end')
+    && String(ofModalEl('roleEx-outfit-suit-add')?.textContent) === '+ 新建套装', true);
+
+// ② 新建套装：名字 trim 为空取消 / 重名拒绝 / 成功
+const ofRawBeforeSuitCancel = ofJsonl();
+const ofSuitListLen0 = ofLen(ofSuitListEl());
+globalThis.prompt = () => '   ';
+ofModalEl('roleEx-outfit-suit-add')?.click();
+await ofTick();
+check('新建套装：名字 trim 后为空 → 取消（不新增、不写盘、连列表都没重画）',
+    ofSuitsOf('outer').length === 0 && ofJsonl() === ofRawBeforeSuitCancel
+    && ofLen(ofSuitListEl()) === ofSuitListLen0, true);
+globalThis.prompt = () => '通勤装';
+ofModalEl('roleEx-outfit-suit-add')?.click();
+await ofTick();
+const ofCommuteRow = ofSuitRowByName('outer', '通勤装');
+const ofCommuteId = String(ofSuitByName('outer', '通勤装')?.id || '');
+check('新建套装：成功 → 一级列表多一行 + 已落盘（拿到 id）', !!ofCommuteRow && !!ofCommuteId, true);
+check('新建的套装 id 可用：单段 ASCII 1–32 字符、且不占用保留名',
+    /^[a-zA-Z0-9_-]{1,32}$/.test(ofCommuteId)
+    && !['outer', 'inner', '套装', 'hat', 'top', 'bottom', 'socks', 'shoes', 'underwear', 'underpants'].includes(ofCommuteId), true);
+check('新建的套装 items 按该组的固定分类给键（外：hat/top/bottom/socks/shoes，都是空数组）',
+    Object.keys(ofSuitByName('outer', '通勤装')?.items || {}).join(','), 'hat,top,bottom,socks,shoes');
+toasts.length = 0;
+globalThis.prompt = () => '通勤装';
+ofModalEl('roleEx-outfit-suit-add')?.click();
+await ofTick();
+check('新建套装：重名 → toast「已有同名套装」+ 不新增',
+    toasts.some(t => t.kind === 'error' && t.message === '已有同名套装') && ofSuitsOf('outer').length === 1, true);
+check('一级列表行 = 名称 span + 「编辑」按钮 + 芯片（文本 = 套装名）',
+    (ofCommuteRow?.children || []).length === 3
+    && ofClass(ofCommuteRow.children[0]).includes('roleEx-outfit-suit-name')
+    && String(ofCommuteRow.children[0].textContent) === '通勤装'
+    && String(ofCommuteRow.children[1].id) === 'roleEx-outfit-suit-edit-' + ofCommuteId
+    && ofClass(ofCommuteRow.children[1]).includes('menu_button') && ofClass(ofCommuteRow.children[1]).includes('roleEx-btn-xs')
+    && String(ofCommuteRow.children[1].textContent) === '编辑'
+    && ofClass(ofCommuteRow.children[2]).includes('roleEx-outfit-chip')
+    && String(ofCommuteRow.children[2].textContent) === '通勤装', true);
+
+// ③ 芯片：选中（同组互斥）/ 再点取消
+globalThis.prompt = () => '休闲装';
+ofModalEl('roleEx-outfit-suit-add')?.click();
+await ofTick();
+const ofLeisureId = String(ofSuitByName('outer', '休闲装')?.id || '');
+// ⚠️ 建第二套会让一级列表重画一次，而芯片点击处理器操作的是**最近一次渲染**的那组芯片 ——
+//    所以交互一律用重画后的节点（点旧节点只会去改新节点，旧节点自己不会变色）。
+const ofCommuteChip = ofSuitRowByName('outer', '通勤装')?.children?.[2];
+const ofLeisureChip = ofSuitRowByName('outer', '休闲装')?.children?.[2];
+check('第二个套装的芯片是独立的一颗（初始都没选中）',
+    String(ofCommuteChip?.textContent) === '通勤装' && String(ofCommuteChip?.className).includes('is-on') === false
+    && String(ofLeisureChip?.textContent) === '休闲装', true);
+const ofPSuitPick = ofLen(ofPreviewBox);
+ofCommuteChip?.click();
+await ofTick();
+check('点芯片 → 该芯片带 is-on', ofCommuteChip?.classList?.contains('is-on'), true);
+check('选中落盘（第 4 行 picked.outer = 通勤装的 id）', ofSuitPicked().outer, ofCommuteId);
+check('预览外组第一行 = 套装：通勤装',
+    ofPreviewRows(ofNew(ofPreviewBox, ofPSuitPick)).find(r => r.children?.[0]?.textContent === '套装：')?.children?.[1]?.textContent, '通勤装');
+const ofPSuitMutex = ofLen(ofPreviewBox);
+ofLeisureChip?.click();
+await ofTick();
+check('同组互斥：换选另一个 → 新的带 is-on、旧的 is-on 被撤掉',
+    ofLeisureChip?.classList?.contains('is-on') === true
+    && ofCommuteChip?.classList?.contains('is-on') === false, true);
+check('互斥后落盘只剩后选的那个', ofSuitPicked().outer, ofLeisureId);
+check('预览也跟着换',
+    ofPreviewRows(ofNew(ofPreviewBox, ofPSuitMutex)).find(r => r.children?.[0]?.textContent === '套装：')?.children?.[1]?.textContent, '休闲装');
+ofLeisureChip?.click();
+await ofTick();
+check('再点已选的那颗 → 取消（is-on 撤掉、picked 置空）',
+    ofLeisureChip?.classList?.contains('is-on') === false && ofSuitPicked().outer === '', true);
+ofCommuteChip?.click();
+await ofTick();
+check('重新选中通勤装（后面预览 / 注入都用它）', ofSuitPicked().outer, ofCommuteId);
+
+// ④ 二级弹窗：与一级同时存在，head / 名称 / 下属分类 / 底部顺序
+ofCommuteRow?.children?.[1]?.click();
+const ofSuitEditModal = ofModalInBodyById('roleEx-outfit-suit-edit-modal');
+check('二级弹窗 #roleEx-outfit-suit-edit-modal 与一级**同时存在**',
+    String(ofSuitEditModal?.id) === 'roleEx-outfit-suit-edit-modal'
+    && ofModalInBodyById('roleEx-outfit-suit-modal') !== null, true);
+const ofSuitEditInner = ofSuitEditModal?.children?.[0];
+check('二级弹窗 head = span「编辑套装」+ i.fa-xmark',
+    String(ofSuitEditInner?.children?.[0]?.children?.[0]?.textContent) === '编辑套装'
+    && ofClass(ofSuitEditInner?.children?.[0]?.children?.[1]).includes('fa-xmark'), true);
+check('套装名输入框 #roleEx-outfit-suit-name 预填当前名',
+    ofModalEl('roleEx-outfit-suit-name')?.value, '通勤装');
+check('下属分类输入框按 SUIT_ITEMS_BY_PART 顺序（外 = hat/top/bottom/socks/shoes，没有内衣那两个）',
+    ['hat', 'top', 'bottom', 'socks', 'shoes'].every(k => !!ofModalEl('roleEx-outfit-suit-item-' + k))
+    && ofModalEl('roleEx-outfit-suit-item-underwear') === null, true);
+check('每个输入框的值 = items 用半角逗号连接（此刻都还空着）',
+    ['hat', 'top', 'bottom', 'socks', 'shoes'].map(k => ofModalEl('roleEx-outfit-suit-item-' + k)?.value).join('|'),
+    '||||');
+const ofSuitActions = ofModalEl('roleEx-outfit-suit-save')?.parentElement;
+check('二级弹窗底部 = .roleEx-row.roleEx-gap.roleEx-end，顺序 删除套装 → 取消 → 保存',
+    ofHasClass(ofSuitActions, 'roleEx-row') && ofHasClass(ofSuitActions, 'roleEx-end')
+    && ofSuitActions?.children?.map(c => String(c.id)).join(',')
+    === 'roleEx-outfit-suit-del,roleEx-outfit-suit-cancel,roleEx-outfit-suit-save', true);
+check('三个按钮 class 都是 menu_button roleEx-btn，「删除套装」带 roleEx-danger',
+    (ofSuitActions?.children || []).every(c => ofClass(c).includes('menu_button') && ofClass(c).includes('roleEx-btn'))
+    && ofHasClass(ofModalEl('roleEx-outfit-suit-del'), 'roleEx-danger'), true);
+
+// ⑤ 保存：空名 / 重名都不写盘不关窗；正常保存 = 改名（名字变了才调）+ 一次性提交全部下属分类
+toasts.length = 0;
+const ofRawBeforeSuitEmpty = ofJsonl();
+ofModalEl('roleEx-outfit-suit-name').value = '  ';
+ofModalEl('roleEx-outfit-suit-save')?.click();
+await ofTick();
+check('套装空名 → toast「套装名不能为空」+ 不写盘 + 不关窗',
+    toasts.some(t => t.kind === 'error' && t.message === '套装名不能为空')
+    && ofJsonl() === ofRawBeforeSuitEmpty && ofModalInBodyById('roleEx-outfit-suit-edit-modal') !== null, true);
+toasts.length = 0;
+ofModalEl('roleEx-outfit-suit-name').value = '休闲装';
+ofModalEl('roleEx-outfit-suit-save')?.click();
+await ofTick();
+check('套装重名 → toast「已有同名套装」+ 不写盘 + 不关窗',
+    toasts.some(t => t.kind === 'error' && t.message === '已有同名套装')
+    && ofJsonl() === ofRawBeforeSuitEmpty && ofModalInBodyById('roleEx-outfit-suit-edit-modal') !== null, true);
+ofModalEl('roleEx-outfit-suit-name').value = '通勤装改';
+ofModalEl('roleEx-outfit-suit-item-hat').value = '贝雷帽';
+ofModalEl('roleEx-outfit-suit-item-top').value = '大衣,白衬衫';
+ofModalEl('roleEx-outfit-suit-item-shoes').value = '短靴,雨靴';
+ofModalEl('roleEx-outfit-suit-save')?.click();
+await ofTick();
+check('保存成功 → 关二级弹窗，一级弹窗还留着',
+    ofModalInBodyById('roleEx-outfit-suit-edit-modal') === null
+    && ofModalInBodyById('roleEx-outfit-suit-modal') !== null, true);
+check('保存成功 → 改名落盘（id 不变、name 变）', ofSuitByName('outer', '通勤装改')?.id, ofCommuteId);
+check('保存成功 → items 一次性写入全部下属分类（没填的是空数组）',
+    JSON.stringify(ofSuitByName('outer', '通勤装改')?.items),
+    JSON.stringify({ hat: ['贝雷帽'], top: ['大衣', '白衬衫'], bottom: [], socks: [], shoes: ['短靴', '雨靴'] }));
+check('改名后一级列表就地刷新（能按新名字找到那一行）', !!ofSuitRowByName('outer', '通勤装改'), true);
+
+// ⑥ 预览：套装行 + 分类行合并去重（散装在前、套装项在后）
+const ofPMerged = ofLen(ofPreviewBox);
+api.renderOutfit();
+const ofMergedRows = ofPreviewRows(ofNew(ofPreviewBox, ofPMerged));
+const ofMergedVal = (label) => ofMergedRows.find(r => r.children?.[0]?.textContent === label + '：')?.children?.[1]?.textContent;
+check('预览：外组第一行是套装行（套装：通勤装改）', ofMergedVal('套装'), '通勤装改');
+check('预览：分类行 = 散装在前 + 套装项在后、整体去重（鞋子：短靴 / 雨靴）', ofMergedVal('鞋子'), '短靴 / 雨靴');
+check('预览：套装 items 进了各自分类（头饰：贝雷帽、上衣：大衣 / 白衬衫）',
+    [ofMergedVal('头饰'), ofMergedVal('上衣')].join('|'), '贝雷帽|大衣 / 白衬衫');
+const ofUnpickedSuitRows = ofMergedRows.filter(r => String(r.children?.[0]?.textContent) === '套装：'
+    && String(r.children?.[1]?.textContent) === '未选');
+check('预览：内组没选套装 → 它的套装行「未选」+ is-empty',
+    ofUnpickedSuitRows.length === 1 && ofHasClass(ofUnpickedSuitRows[0]?.children?.[1], 'is-empty'), true);
+check('预览：「其他」组不出现套装行（整份预览里只有 2 条套装行）',
+    ofMergedRows.filter(r => String(r.children?.[0]?.textContent) === '套装：').length, 2);
+
+// ⑦ 注入正文：套装打头 + 各分类合并去重（断言实际字符串）
+ofDummyOrder.push({ identifier: 'roleExpansionOutfit', enabled: true });
+const ofSuitInject = ofSource();
+check('注入正文的外组整行（套装打头、分类按清单顺序、散装在前、整体去重）',
+    ofSuitInject.split('\n').find(l => l.startsWith('外：')),
+    '外：套装=通勤装改；头饰=贝雷帽；上衣=大衣 / 白衬衫；鞋子=短靴 / 雨靴');
+check('内组既没选套装也没选散装 → 整行不出现', ofSuitInject.includes('内：'), false);
+ofDummyOrder.splice(ofDummyOrder.findIndex(e => e.identifier === 'roleExpansionOutfit'), 1);
+
+// ⑧ 删除套装：confirm 文案 + 拒绝 / 确认两条路
+ofSuitRowByName('outer', '休闲装')?.children?.[1]?.click();
+check('打开的是休闲装的二级弹窗', ofModalEl('roleEx-outfit-suit-name')?.value, '休闲装');
+const ofSuitConfirmMsgs = [];
+globalThis.confirm = (msg) => { ofSuitConfirmMsgs.push(String(msg)); return false; };
+ofModalEl('roleEx-outfit-suit-del')?.click();
+await ofTick();
+check('confirm 拒绝 → 不删、不关窗，且 confirm 文案一字不差',
+    ofSuitConfirmMsgs.at(-1) === '删除套装「休闲装」？'
+    && ofModalInBodyById('roleEx-outfit-suit-edit-modal') !== null
+    && ofSuitsOf('outer').length === 2, true);
+globalThis.confirm = (msg) => { ofSuitConfirmMsgs.push(String(msg)); return true; };
+ofModalEl('roleEx-outfit-suit-del')?.click();
+await ofTick();
+check('确认删除 → 关二级弹窗 + 从落盘里消失',
+    ofModalInBodyById('roleEx-outfit-suit-edit-modal') === null && ofSuitByName('outer', '休闲装') === null, true);
+check('删除后一级列表最新一次渲染里没有它了', ofSuitRowByName('outer', '休闲装'), null);
+
+// ⑨ 第 4 行的内容
+check('第 4 行：suits.outer 只剩通勤装改，items 只含该组固定分类',
+    [ofSuitsOf('outer').map(s => s.name).join(','), Object.keys(ofSuitsOf('outer')[0]?.items || {}).join(',')].join(' | '),
+    '通勤装改 | hat,top,bottom,socks,shoes');
+check('第 4 行：picked.outer 指向通勤装改、picked.inner 为空',
+    [ofSuitPicked().outer === ofCommuteId, ofSuitPicked().inner].join('|'), 'true|');
+
+// ⑩ 老文件（只有三行）：读不报错、套装为空
+assetFs.set(ofJsonlKey(), ofJsonl().trim().split('\n').slice(0, 3).join('\n') + '\n');
+const ofOldRes = await api.reloadOutfit();
+check('老文件（缺第 4 行）：读得回来、不算坏行', [ofOldRes?.ok, ofOldRes?.skipped].join('|'), 'true|0');
+check('老文件：套装为空（suits / picked 都空）',
+    [ofSuitsOf('outer').length, ofSuitPicked().outer, ofSuitPicked().inner].join('|'), '0||');
+const ofPOld = ofLen(ofPreviewBox);
+api.renderOutfit();
+check('老文件：预览的套装行回到「未选」',
+    ofPreviewRows(ofNew(ofPreviewBox, ofPOld)).find(r => r.children?.[0]?.textContent === '套装：')?.children?.[1]?.textContent, '未选');
+ofSuitRowBtn('outer')?.click();
+check('老文件：一级弹窗回到「还没有套装」提示',
+    String(ofSuitListEl()?.children?.[0]?.textContent).includes('还没有套装'), true);
+
+// ⑪ 脏第 4 行：未知组 / 空名 / 保留名 id / 同组重复 id / 未知 catKey / picked 指错
+const ofDirty = ofJsonl().trim().split('\n').map(l => JSON.parse(l)).slice(0, 3);
+const ofDirtySuits = {
+    __roleExpansion: 'outfit-suits',
+    suits: {
+        outer: [
+            { id: 'top', name: '保留名 id', items: { top: ['大衣'], 不存在的分类: ['x'] } },
+            { id: '', name: '缺 id', items: { hat: ['贝雷帽'] } },
+            { id: 'dup', name: '甲', items: {} },
+            { id: 'dup', name: '乙', items: {} },
+            { id: 'ok-1', name: '合法 id', items: { top: '大衣,白衬衫' } },
+            { id: 'same-id', name: '跨组同 id（外）', items: {} },
+            { id: 'no-name', name: '   ', items: {} },
+            { id: 'no-name2', items: {} },
+            'not-an-object',
+        ],
+        inner: [{ id: 'same-id', name: '跨组同 id（内）', items: { underwear: ['白'] } }],
+        legs: [{ id: 'x', name: '未知组', items: {} }],
+    },
+    picked: { outer: '不存在的', inner: 'same-id' },
+};
+assetFs.set(ofJsonlKey(), ofDirty.map(l => JSON.stringify(l)).join('\n') + '\n' + JSON.stringify(ofDirtySuits) + '\n');
+const ofDirtyRes = await api.reloadOutfit();
+check('脏第 4 行：不算坏行', ofDirtyRes?.skipped, 0);
+// 归一化只发生在内存里：改一下 top 的备选表把内存状态落一次盘，文件里读到的才是归一化后的结果
+ofOpenCatModal('top');
+ofModalEl('roleEx-outfit-modal-tags').value = '大衣';
+ofModalEl('roleEx-outfit-modal-save')?.click();
+await ofTick();
+const ofDirtyOuter = ofSuitsOf('outer');
+check('脏第 4 行：未知 part（legs）整组丢掉（只剩 外 / 内）', Object.keys(ofSuits()).join(','), 'outer,inner');
+check('脏第 4 行：空名 / name 非字符串 / 非对象条目丢掉，其余一条不丢（9 → 6）', ofDirtyOuter.length, 6);
+check('脏第 4 行：保留名 id（top）被换新 id，但条目还在',
+    ofDirtyOuter.some(s => s.name === '保留名 id' && s.id !== 'top' && s.id !== ''), true);
+check('脏第 4 行：合法 id（ok-1）原样保留', ofDirtyOuter.some(s => s.id === 'ok-1'), true);
+check('脏第 4 行：同组内重复 id 的第二条被换新 id（甲 / 乙 都在、id 不同）',
+    (() => {
+        const jia = ofDirtyOuter.find(s => s.name === '甲');
+        const yi = ofDirtyOuter.find(s => s.name === '乙');
+        return !!jia && !!yi && jia.id !== yi.id;
+    })(), true);
+check('脏第 4 行：同一个 id 可以同时出现在 外 / 内 两组（跨 part 不算重复）',
+    [ofDirtyOuter.some(s => s.id === 'same-id'), ofSuitsOf('inner').some(s => s.id === 'same-id')].join('|'),
+    'true|true');
+check('脏第 4 行：items 只留该组固定分类（未知 catKey 丢掉、缺的补空数组）',
+    Object.keys(ofDirtyOuter.find(s => s.name === '保留名 id')?.items || {}).join(','), 'hat,top,bottom,socks,shoes');
+check('脏第 4 行：picked 指向不存在 → 置空；指向存在的（跨组同 id）→ 保留',
+    [ofSuitPicked().outer, ofSuitPicked().inner].join('|'), '|same-id');
+
+// ⑫ 写失败（资源端点 500）→ 内存回滚 + 不写盘；恢复后同一次操作能成功
+ofSuitRowBtn('outer')?.click();
+const ofRollbackName = String(ofSuitsOf('outer')[0]?.name || '');
+assetHttpStatus = 500;
+const ofRawFailed = ofJsonl();
+toasts.length = 0;
+globalThis.prompt = () => '失败装';
+ofModalEl('roleEx-outfit-suit-add')?.click();
+await ofTick();
+check('写失败：addSuit 不新增、不写盘、内存没动（有 error toast）',
+    ofSuitsOf('outer').length === 6 && ofJsonl() === ofRawFailed
+    && toasts.some(t => t.kind === 'error'), true);
+ofSuitListLastRender('outer')[0]?.children?.[2]?.click();
+await ofTick();
+check('写失败：pickSuit 的 picked 回到原值（内存回滚）、不写盘',
+    ofSuitPicked().outer === '' && ofJsonl() === ofRawFailed, true);
+ofSuitListLastRender('outer')[0]?.children?.[1]?.click();
+ofModalEl('roleEx-outfit-suit-name').value = '改不动的名字';
+ofModalEl('roleEx-outfit-suit-item-hat').value = '改不动的贝雷帽';
+ofModalEl('roleEx-outfit-suit-save')?.click();
+await ofTick();
+check('写失败：renameSuit / setSuitItems 都不落盘、二级弹窗不关',
+    ofJsonl() === ofRawFailed && ofModalInBodyById('roleEx-outfit-suit-edit-modal') !== null, true);
+const ofFailConfirm = [];
+globalThis.confirm = (msg) => { ofFailConfirm.push(String(msg)); return true; };
+ofModalEl('roleEx-outfit-suit-del')?.click();
+await ofTick();
+check('写失败：removeSuit 不删、不写盘，一级列表那一行还在',
+    ofJsonl() === ofRawFailed && ofSuitsOf('outer').length === 6
+    && ofSuitListLastRender('outer').some(r => String(r.children?.[0]?.textContent) === ofRollbackName), true);
+check('写失败：删除确认文案用的是原名字（失败的改名没泄漏进去）',
+    ofFailConfirm.at(-1), '删除套装「' + ofRollbackName + '」？');
+assetHttpStatus = null;
+ofModalEl('roleEx-outfit-suit-del')?.click();
+await ofTick();
+check('端点恢复后重试同一次删除 → 成功（落盘少一套、二级弹窗关了）',
+    ofSuitsOf('outer').length === 5 && ofModalInBodyById('roleEx-outfit-suit-edit-modal') === null
+    && ofSuitByName('outer', ofRollbackName) === null, true);
+// 收尾：关掉还开着的一级弹窗，不给后面的用例留状态
+ofModalInBodyById('roleEx-outfit-suit-modal')?.children?.[0]?.children?.[0]?.children?.[1]?.click();
+check('收尾：一级弹窗已关', ofModalInBodyById('roleEx-outfit-suit-modal'), null);
+globalThis.prompt = ofSavedPromptSuit;
+globalThis.confirm = ofSavedConfirmSuit;
+
+// ---- 9. 降级与可用性 ----
 const ofSavedCtx = globalThis.SillyTavern.getContext;
 // 群聊：没有角色目录 → 明确不可用，状态行打红字、两栏置灰
 globalThis.SillyTavern.getContext = () => ({ ...ofSavedCtx(), groupId: 'g-outfit' });
@@ -2654,7 +3059,7 @@ check('缺补丁：探针文案也点出 st-twitter-assets.patch',
 journalEndpointAvailable = true;
 
 // ============================================================================
-// 9. 服务端白名单里没有 outfit（装了旧版补丁）→ 页面级不可用 sub-not-allowed
+// 10. 服务端白名单里没有 outfit（装了旧版补丁）→ 页面级不可用 sub-not-allowed
 //
 // 为什么另起实例：探针结果每个实例只探一次并缓存进 rt.state.reason，而主实例此刻已被上一节的
 // patch-missing 占住、桩里没法把它重置回「没探过」。这里直接 import 衣装的工厂（store.js / ui.js）
@@ -2772,7 +3177,7 @@ check('重探：非页面级原因（抖动）→ false', ofBad.store.armOutfitR
 ofBad.rt.state.reason = 'no-character';
 check('重探：没选角色 → false（那是每次现算的，不缓存也不重探）', ofBad.store.armOutfitReprobe(), false);
 
-// ---- 10. 样式契约（直接读 style.css 里的规则）----
+// ---- 11. 样式契约（直接读 style.css 里的规则）----
 const ofCssSrc = readFileSync(fileURLToPath(new URL('../style.css', import.meta.url)), 'utf8');
 /** 取某条规则的规则体：从选择器文本之后、到其后第一个 '}' */
 const ofCssBody = (selector) => {
@@ -2782,6 +3187,16 @@ const ofCssBody = (selector) => {
 const ofPreviewCss = ofCssBody('#roleEx-outfit-preview {');
 check('#roleEx-outfit-preview 占两栏的 55%，且有不被压成一条的下限（flex: 0 0 55% / min-height: 12em）',
     /flex:\s*0 0 55%/.test(ofPreviewCss) && /min-height:\s*12em/.test(ofPreviewCss), true);
+check('名称列定宽 13em（编辑器行与预览行对齐，保留 ellipsis / nowrap / hidden）',
+    /flex:\s*0 0 13em/.test(ofCssBody('.roleEx-outfit-cat-name {'))
+    && /flex:\s*0 0 13em/.test(ofCssBody('.roleEx-outfit-preview-name {'))
+    && /overflow:\s*hidden/.test(ofCssBody('.roleEx-outfit-cat-name {'))
+    && /text-overflow:\s*ellipsis/.test(ofCssBody('.roleEx-outfit-cat-name {'))
+    && /white-space:\s*nowrap/.test(ofCssBody('.roleEx-outfit-cat-name {')), true);
+check('行内按键靠右由 `.roleEx-outfit-cat > .menu_button { margin-left: auto }` 实现',
+    /margin-left:\s*auto/.test(ofCssBody('.roleEx-outfit-cat > .menu_button {')), true);
+check('已删除的 `.roleEx-outfit-cat-btn` 规则不存在（行内小图标那套已拆掉）',
+    /\.roleEx-outfit-cat-btn\b/.test(ofCssSrc), false);
 const ofChipOnCss = ofCssBody('.roleEx-outfit-chip.is-on {');
 check('.roleEx-outfit-chip.is-on：字色走主题引用色（--SmartThemeQuoteColor）',
     /color:\s*var\(--SmartThemeQuoteColor/.test(ofChipOnCss), true);

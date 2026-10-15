@@ -2,7 +2,7 @@
 
 **一套持续完善的模块化、可扩展的ST扩展插件**
 
-![version](https://img.shields.io/badge/version-0.10.1-blue)
+![version](https://img.shields.io/badge/version-0.11.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
@@ -14,7 +14,7 @@
 
 | 模块 | 它做什么 | 文档 |
 | --- | --- | --- |
-| 👕 **衣装打扮** | 维护「现在穿什么」：七个**固定分类**（头饰 / 上衣 / 下装 / 袜子 / 鞋子 / 内衣 / 内裤）+ 自建分类，每个分类一个备选表（**英文逗号**分隔）、**分类内可多选（叠穿）**；选中的衣装按 外 / 内 / 其他 三行分组注入后续对话，让模型的描写保持一致 | [modules/outfit/README.md](modules/outfit/README.md) |
+| 👕 **衣装打扮** | 维护「现在穿什么」：七个**固定分类**（头饰 / 上衣 / 下装 / 袜子 / 鞋子 / 内衣 / 内裤）+ 自建分类，每个分类一个备选表（**英文逗号**分隔）、**分类内可多选（叠穿）**；外 / 内两组还能把整套搭配存成**套装**（同组互斥、与散装并存）；选中的衣装按 外 / 内 / 其他 三行分组注入后续对话，让模型的描写保持一致 | [modules/outfit/README.md](modules/outfit/README.md) |
 | ❤️ **角色状态栏** | 维护一组状态（`生命值 8/10`、`好感度 42`…），每次生成前自动注入；模型回复里的 `<名称>值</名称>` 会被解析、更新并从正文剥离 | [modules/state/README.md](modules/state/README.md) |
 | 📔 **日记** | 勾选若干聊天楼层 → 模型以角色第一人称写一篇日记 → 存成按会话隔离的 `.jsonl`；勾选任意几篇注入后续对话，成为角色「记得的事」 | [modules/journal/README.md](modules/journal/README.md) |
 | 🐦 **推特** | 面板里是一张自包含的**仿推特页面**（**固定高度**：资料头钉住不动、只有推文列表内部滚）：头像 / 横幅 / 资料区由你编辑，推文正文由模型用 `<推文>…</推文>` 输出（也可以手动新增 / 编辑 / 置顶）；**点推文能进详情页**；媒体支持本地配图与 **URL 视频 / 动图**；`关注`/`🔄`/`❤️`/`🔖` 可交互并落盘 | [modules/twitter/README.md](modules/twitter/README.md) |
@@ -72,7 +72,7 @@
 - 模块全拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
   「扩展」设置面板里只剩框架自己的东西 —— 不会出现「空白面板 + 永远检测中」的假故障
 - 「存为默认设置」/「恢复默认设置」统一管**所有模块的设置项**（快照存进酒馆的扩展设置，重启仍在）
-- 配套离线自测（最小 DOM / ST 桩，**632 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
+- 配套离线自测（最小 DOM / ST 桩，**718 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
 
 **模块**（各自成文）（按主面板里的区块顺序排列 = `modules/manifest.json` 的 `modules[]` 顺序）
 
@@ -191,7 +191,7 @@ roleExpansion.logMarkerSupport()
 1. 打开顶部工具栏的**羽毛图标**（世界书与用户设置之间）。
 2. 面板里是**若干个可折叠区块** —— 默认四块：**衣装打扮**、**角色状态栏**、**日记**、**推特**
    （衣装与推特两块横跨整行，推特在最下面）。
-3. 各自的完整用法（假的推特页面怎么用、怎么生成日记、状态怎么写、衣装怎么选、有哪些开关与坑）见模块文档：
+3. 各自的完整用法（假的推特页面怎么用、怎么生成日记、状态怎么写、衣装与套装怎么选、有哪些开关与坑）见模块文档：
    [modules/outfit/README.md](modules/outfit/README.md) ｜ [modules/state/README.md](modules/state/README.md) ｜
    [modules/journal/README.md](modules/journal/README.md) ｜ [modules/twitter/README.md](modules/twitter/README.md)。
    本文只讲框架与安装。
@@ -404,7 +404,7 @@ roleExpansion.adoptOutfitCardStateFromPreset()  roleExpansion.updateOutfitPreset
 ### 自测脚本
 
 ```bash
-npm test            # = node tools/smoke-test.mjs —— 632 项断言，纯 Node，不需要浏览器/酒馆
+npm test            # = node tools/smoke-test.mjs —— 718 项断言，纯 Node，不需要浏览器/酒馆
 npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点在 express 沙盒里真跑（26 + 36 项）
 ```
 
@@ -499,7 +499,8 @@ npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点�
 - 本扩展只走 `getContext()` 暴露的接口，**不依赖任何后端 server plugin**；
   需要服务端配合的只有两处落盘（日记 jsonl、模块私有资源文件），分别由 `patches/st-journal-store.patch`
   与 `patches/st-twitter-assets.patch` 提供。
-- **模块自己的限制写在模块文档里**：衣装（群聊不支持、**只有单向注入**、固定分类不可改名删除、没有导入导出…）见
+- **模块自己的限制写在模块文档里**：衣装（群聊不支持、**只有单向注入**、固定分类不可改名删除、**
+  套装只属于外 / 内两组且同组互斥**、没有导入导出…）见
   [modules/outfit/README.md](modules/outfit/README.md)；推特（群聊不支持、FLV 与 URL 媒体有约束、数字没有范围校验…）见
   [modules/twitter/README.md](modules/twitter/README.md)；日记（群聊不支持、改名边界、隔离通道的推理剥块只认成块写法…）见
   [modules/journal/README.md](modules/journal/README.md)；状态（标签准入规则、新聊天状态为空…）见
@@ -534,7 +535,7 @@ ST-RoleExpansion/
 │   ├── st-journal-store.patch        日记文件读写端点
 │   └── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点（子目录白名单 twitter / outfit）
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，632 项断言）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，718 项断言）
 │   ├── patch-endpoint-test.mjs       日记端点 e2e（express 沙盒，可选）
 │   ├── patch-asset-test.mjs          资源端点 e2e（同上）
 │   └── check-filename.mjs            文件名合规校验器

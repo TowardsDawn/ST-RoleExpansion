@@ -3,6 +3,7 @@
  *
  * 主面板里的「衣装打扮」区块：一行状态 + 左右两栏（左预览 / 右编辑器）+ 注入模板折叠块。
  * 分类的改名 / 删除 / 改备选 tag 走独立弹窗（与推特 / 日记同款：挂 document.body，不吃面板的 overflow）。
+ * 外 / 内 两组另有「套装」：编辑器里一行入口 → 一级弹窗（管理该组套装）→ 二级弹窗（编辑单个套装）。
  *
  * 层次规矩与推特 / 状态栏一致：正文里是**平铺内容 + 同级折叠块**，
  * 不套 .roleEx-block、也不出现嵌套的 .roleEx-section（折叠块自己的 header 就是标题）。
@@ -31,6 +32,19 @@ export function createOutfitUi(kernel, rt) {
     const renameCustomCategory = (...args) => rt.store.renameCustomCategory(...args);
     const setCategoryTags = (...args) => rt.store.setCategoryTags(...args);
     const togglePicked = (...args) => rt.store.togglePicked(...args);
+    // 套装（Part C）：只有 外 / 内 两组有，见 SUIT_PARTS；契约在 store.js，这里只读列表 + 转发写操作
+    const addSuit = (...args) => rt.store.addSuit(...args);
+    const getPickedSuit = (...args) => rt.store.getPickedSuit(...args);
+    const getSuits = (...args) => rt.store.getSuits(...args);
+    const isSuitNameTaken = (...args) => rt.store.isSuitNameTaken(...args);
+    const pickSuit = (...args) => rt.store.pickSuit(...args);
+    const removeSuit = (...args) => rt.store.removeSuit(...args);
+    const renameSuit = (...args) => rt.store.renameSuit(...args);
+    const setSuitItems = (...args) => rt.store.setSuitItems(...args);
+    const suitById = (...args) => rt.store.suitById(...args);
+    const SUIT_CATEGORY_NAME = rt.store.SUIT_CATEGORY_NAME;
+    const SUIT_ITEMS_BY_PART = rt.store.SUIT_ITEMS_BY_PART;
+    const SUIT_PARTS = rt.store.SUIT_PARTS;
     const PRESET_PROMPT = rt.inject.PRESET_PROMPT;
     const currentPresetName = (...args) => rt.inject.currentPresetName(...args);
     const diagnoseOutfitCard = (...args) => rt.inject.diagnoseOutfitCard(...args);
@@ -133,7 +147,7 @@ function renderStatus() {
     }
 }
 
-/** 预览：按 外 / 内 / 其他 分组，一行一个分类（未选的显示「未选」并弱化） */
+/** 预览：按 外 / 内 / 其他 分组，一行一个分类（未选的显示「未选」并弱化）；外 / 内的第一行是套装 */
 function renderPreview() {
     const refs = panelRefs();
     const box = refs && refs.previewList;
@@ -149,8 +163,21 @@ function renderPreview() {
     const selection = getSelection();
     for (const part of PARTS) {
         box.appendChild(el('div', { class: 'roleEx-outfit-preview-part', text: part.label }));
+        // 套装行只属于有套装的那两组；「其他」组一行都不多
+        const suit = hasSuits(part.key) ? suitById(getPickedSuit(part.key)) : null;
+        if (hasSuits(part.key)) {
+            const suitName = suit ? suit.name : '';
+            box.appendChild(el('div', { class: 'roleEx-outfit-preview-row' }, [
+                el('span', { class: 'roleEx-outfit-preview-name', text: SUIT_CATEGORY_NAME + '：' }),
+                el('span', {
+                    class: 'roleEx-outfit-preview-value' + (suitName ? '' : ' is-empty'),
+                    text: suitName || '未选',
+                }),
+            ]));
+        }
         for (const cat of catalog.filter(c => c.part === part.key)) {
-            const tags = selection[cat.key] || [];
+            // 装了套装时：散装选中项在前、该套装在这个分类里的元素在后，整体去重
+            const tags = mergeTags(selection[cat.key], suitItems(suit, cat.key));
             const empty = !tags.length;
             box.appendChild(el('div', { class: 'roleEx-outfit-preview-row' }, [
                 el('span', { class: 'roleEx-outfit-preview-name', text: cat.name + '：' }),
@@ -161,6 +188,28 @@ function renderPreview() {
             ]));
         }
     }
+}
+
+/** 这一组有没有套装（只有 外 / 内） */
+function hasSuits(partKey) {
+    return Array.isArray(SUIT_PARTS) && SUIT_PARTS.includes(partKey);
+}
+
+/** 套装在某个分类里的元素；套装不存在 / 该分类没内容都当空数组 */
+function suitItems(suit, catKey) {
+    const raw = suit && suit.items ? suit.items[catKey] : null;
+    return Array.isArray(raw) ? raw : [];
+}
+
+/** 散装选中项在前、套装元素在后，整体去重（顺序即显示顺序） */
+function mergeTags(picked, extra) {
+    const out = [];
+    for (const tag of [].concat(picked || [], extra || [])) {
+        if (tag && !out.includes(tag)) {
+            out.push(tag);
+        }
+    }
+    return out;
 }
 
 /**
@@ -185,6 +234,10 @@ function renderEditor() {
         fold.header.addEventListener('click', () => {
             foldOpen[part.key] = !foldOpen[part.key];
         });
+        // 有套装的组（外 / 内）：body 第一行是「套装」入口，形态与分类行一致
+        if (hasSuits(part.key)) {
+            fold.body.appendChild(buildSuitRow(part));
+        }
         for (const cat of catalog.filter(c => c.part === part.key)) {
             fold.body.appendChild(buildCategoryRow(cat));
         }
@@ -217,16 +270,30 @@ function outfitFoldOpen() {
     return rt.state.foldOpen;
 }
 
-/** 分类行：名称 + 编辑（点开弹窗，见 openCategoryModal）；固定分类与自定义分类在此没有区别 */
+/** 分类行：名称 + 编辑独立按键（点开弹窗，见 openCategoryModal）；固定分类与自定义分类在此没有区别 */
 function buildCategoryRow(cat) {
     return el('div', { class: 'roleEx-outfit-cat', id: 'roleEx-outfit-cat-' + cat.key }, [
         el('span', { class: 'roleEx-outfit-cat-name', text: cat.name, title: cat.name }),
-        el('span', {
-            class: 'roleEx-outfit-cat-btn',
+        el('div', {
+            class: 'menu_button roleEx-btn-xs',
             id: 'roleEx-outfit-edit-' + cat.key,
             title: '编辑这个分类的备选 tag',
             text: '编辑',
             onclick: () => openCategoryModal(cat),
+        }),
+    ]);
+}
+
+/** 套装行：与分类行同形，只是名字固定为「套装」、编辑键打开的是套装弹窗 */
+function buildSuitRow(part) {
+    return el('div', { class: 'roleEx-outfit-cat', id: 'roleEx-outfit-cat-suit-' + part.key }, [
+        el('span', { class: 'roleEx-outfit-cat-name', text: SUIT_CATEGORY_NAME, title: SUIT_CATEGORY_NAME }),
+        el('div', {
+            class: 'menu_button roleEx-btn-xs',
+            id: 'roleEx-outfit-suit-edit-' + part.key,
+            title: '编辑这一组的套装',
+            text: '编辑',
+            onclick: () => openSuitModal(part),
         }),
     ]);
 }
@@ -301,9 +368,13 @@ function openCategoryModal(cat) {
     // 同一时刻只允许一个
     document.getElementById('roleEx-outfit-modal')?.remove();
 
-    const inner = el('div', { class: 'roleEx-modal-inner' }, [
-        el('div', { class: 'roleEx-modal-head', text: '编辑「' + cat.name + '」' }),
-    ]);
+    const modal = el('div', { class: 'roleEx-modal', id: 'roleEx-outfit-modal' });
+    const inner = el('div', { class: 'roleEx-modal-inner' });
+    const close = () => modal.remove();
+    inner.appendChild(el('div', { class: 'roleEx-modal-head' }, [
+        el('span', { text: '编辑「' + cat.name + '」' }),
+        el('i', { class: 'fa-solid fa-xmark menu_button roleEx-btn-xs', onclick: close }),
+    ]));
 
     let nameInput = null;
     if (cat.custom) {
@@ -393,32 +464,263 @@ function openCategoryModal(cat) {
         renderOutfit();
     };
 
-    const actions = el('div', { class: 'roleEx-row roleEx-wrap' }, [
+    // 底部统一到右下角：删除分类（仅自定义）→ 取消 → 保存（与日记弹窗同款）
+    const actions = el('div', { class: 'roleEx-row roleEx-gap roleEx-end' }, [
+        cat.custom ? el('div', {
+            class: 'menu_button roleEx-btn roleEx-danger',
+            id: 'roleEx-outfit-modal-del',
+            text: '删除分类',
+            onclick: () => { void del(); },
+        }) : null,
         el('div', {
-            class: 'menu_button roleEx-btn-sm',
+            class: 'menu_button roleEx-btn',
+            id: 'roleEx-outfit-modal-cancel',
+            text: '取消',
+            onclick: close,
+        }),
+        el('div', {
+            class: 'menu_button roleEx-btn',
             id: 'roleEx-outfit-modal-save',
             text: '保存',
             onclick: () => { void save(); },
         }),
-        el('div', {
-            class: 'menu_button roleEx-btn-sm',
-            id: 'roleEx-outfit-modal-cancel',
-            text: '取消',
-            onclick: () => modal.remove(),
-        }),
     ]);
-    if (cat.custom) {
-        actions.appendChild(el('div', {
-            class: 'menu_button roleEx-btn-sm',
-            id: 'roleEx-outfit-modal-del',
-            text: '删除分类',
-            onclick: () => { void del(); },
-        }));
-    }
     inner.appendChild(actions);
 
-    // 取消 = 直接 remove：未保存的改动丢掉，不写盘
-    const modal = el('div', { class: 'roleEx-modal', id: 'roleEx-outfit-modal' }, [inner]);
+    // 取消 / × = 直接 remove：未保存的改动丢掉，不写盘
+    modal.appendChild(inner);
+    document.body.appendChild(modal);
+}
+
+// ---------------------------------------------------------------------------
+// 套装（Part C）：一级弹窗 = 该组的套装列表，二级弹窗 = 编辑单个套装
+// ---------------------------------------------------------------------------
+
+/** 打开着的一级套装弹窗的「重画列表」函数；一级关掉后置空。二级弹窗改完数据靠它刷新一级 */
+let suitListRefresh = null;
+
+/**
+ * 一级弹窗：管理该组的套装列表（`#roleEx-outfit-suit-modal`）。
+ *
+ * 与分类弹窗同款：一次性、挂 document.body、打开前先清掉同 id 的旧窗。
+ * 二级弹窗叠在它上面（见 openSuitEditModal），所以重画列表只重建列表内容、不换弹窗本身。
+ */
+function openSuitModal(part) {
+    document.getElementById('roleEx-outfit-suit-modal')?.remove();
+
+    const modal = el('div', { class: 'roleEx-modal', id: 'roleEx-outfit-suit-modal' });
+    const inner = el('div', { class: 'roleEx-modal-inner' });
+    const close = () => {
+        modal.remove();
+        suitListRefresh = null;
+    };
+    inner.appendChild(el('div', { class: 'roleEx-modal-head' }, [
+        el('span', { text: SUIT_CATEGORY_NAME + '（' + part.label + '）' }),
+        el('i', { class: 'fa-solid fa-xmark menu_button roleEx-btn-xs', onclick: close }),
+    ]));
+
+    const list = el('div', { id: 'roleEx-outfit-suit-list' });
+    // 本次渲染出来的芯片（id → 元素）：点一下只在这几颗之间换 is-on，弹窗其它部分不动
+    let chips = [];
+    const renderList = () => {
+        list.textContent = '';
+        chips = [];
+        const suits = getSuits(part.key) || [];
+        if (!suits.length) {
+            list.appendChild(el('div', { class: 'roleEx-hint', text: '还没有套装，点下面的「+ 新建套装」加一个。' }));
+            return;
+        }
+        const picked = getPickedSuit(part.key);
+        for (const suit of suits) {
+            const on = suit.id === picked;
+            const chipTitle = on ? '点击取消这一组的套装' : '点击选中这个套装';
+            const chip = el('span', {
+                class: 'roleEx-outfit-chip' + (on ? ' is-on' : ''),
+                text: suit.name,
+                title: chipTitle,
+            });
+            // 同组互斥由 store 管：成功后按 getPickedSuit() 的结果重刷本弹窗的芯片，再重画面板预览
+            chip.addEventListener('click', async () => {
+                const res = await pickSuit(part.key, suit.id);
+                if (!res || !res.ok) {
+                    return;
+                }
+                const now = getPickedSuit(part.key);
+                for (const entry of chips) {
+                    entry.el.classList.toggle('is-on', entry.id === now);
+                    entry.el.title = entry.id === now ? '点击取消这一组的套装' : '点击选中这个套装';
+                }
+                renderOutfit();
+            });
+            chips.push({ id: suit.id, el: chip });
+            list.appendChild(el('div', { class: 'roleEx-outfit-suit-row', id: 'roleEx-outfit-suit-row-' + suit.id }, [
+                el('span', { class: 'roleEx-outfit-suit-name', text: suit.name, title: suit.name }),
+                el('div', {
+                    class: 'menu_button roleEx-btn-xs',
+                    id: 'roleEx-outfit-suit-edit-' + suit.id,
+                    title: '编辑这个套装',
+                    text: '编辑',
+                    onclick: () => openSuitEditModal(part, suit.id),
+                }),
+                chip,
+            ]));
+        }
+    };
+    renderList();
+    suitListRefresh = renderList;
+    inner.appendChild(list);
+
+    inner.appendChild(el('div', { class: 'roleEx-row roleEx-gap roleEx-end' }, [
+        el('div', {
+            class: 'menu_button roleEx-btn',
+            id: 'roleEx-outfit-suit-add',
+            text: '+ 新建套装',
+            onclick: () => { void onAddSuit(part, renderList); },
+        }),
+    ]));
+
+    modal.appendChild(inner);
+    document.body.appendChild(modal);
+}
+
+/** 一级弹窗还开着就按最新数据重画它的列表（改完名 / 删完套装后调；没开着就什么都不做） */
+function refreshSuitModal() {
+    if (typeof suitListRefresh === 'function') {
+        suitListRefresh();
+    }
+}
+
+/** 「+ 新建套装」：prompt 取名，空串取消、重名拒绝，成功才重画一级列表 + 面板 */
+async function onAddSuit(part, rerenderList) {
+    const name = globalThis.prompt('新套装名（留空取消）：');
+    const clean = String(name ?? '').trim();
+    if (!clean) {
+        return;
+    }
+    if (isSuitNameTaken(part.key, clean)) {
+        toast('error', '已有同名套装');
+        return;
+    }
+    const res = await addSuit(part.key, clean);
+    if (!res || !res.ok) {
+        return;
+    }
+    rerenderList();
+    renderOutfit();
+}
+
+/**
+ * 二级弹窗：编辑单个套装（`#roleEx-outfit-suit-edit-modal`），与一级弹窗同时存在、叠在它上面。
+ *
+ * 只有保存 / 删除**成功**才关窗并重画一级（名字、列表、芯片都可能变了）；
+ * 取消 / × 只关窗，不写盘也不动一级。
+ */
+function openSuitEditModal(part, suitId) {
+    const suit = suitById(suitId);
+    if (!suit) {
+        return;
+    }
+    document.getElementById('roleEx-outfit-suit-edit-modal')?.remove();
+
+    const modal = el('div', { class: 'roleEx-modal', id: 'roleEx-outfit-suit-edit-modal' });
+    const inner = el('div', { class: 'roleEx-modal-inner' });
+    const close = () => modal.remove();
+    inner.appendChild(el('div', { class: 'roleEx-modal-head' }, [
+        el('span', { text: '编辑套装' }),
+        el('i', { class: 'fa-solid fa-xmark menu_button roleEx-btn-xs', onclick: close }),
+    ]));
+
+    const nameInput = el('input', { type: 'text', class: 'text_pole', id: 'roleEx-outfit-suit-name' });
+    nameInput.value = suit.name;
+    inner.appendChild(el('div', { class: 'roleEx-outfit-modal-field' }, [
+        el('span', { class: 'roleEx-hint roleEx-inline-label', text: '套装名' }),
+        nameInput,
+    ]));
+
+    // 下属分类按 SUIT_ITEMS_BY_PART 的顺序来；显示名从 getCatalog() 取，取不到就退回 key
+    const catalog = getCatalog();
+    const itemInputs = [];
+    for (const catKey of SUIT_ITEMS_BY_PART[part.key] || []) {
+        const cat = catalog.find(c => c.key === catKey);
+        const input = el('input', {
+            type: 'text',
+            class: 'text_pole',
+            id: 'roleEx-outfit-suit-item-' + catKey,
+            placeholder: '用英文逗号分隔，可填多个',
+        });
+        input.value = suitItems(suit, catKey).join(',');
+        itemInputs.push({ catKey, input });
+        inner.appendChild(el('div', { class: 'roleEx-outfit-modal-field' }, [
+            el('span', { class: 'roleEx-hint roleEx-inline-label', text: cat ? cat.name : catKey }),
+            input,
+        ]));
+    }
+
+    /** 保存：① 校验名字 → ② 改名（名字变了才调）→ ③ 下属分类内容一次性提交；任一步失败都停在弹窗里 */
+    const save = async () => {
+        const clean = nameInput.value.trim();
+        if (!clean) {
+            toast('error', '套装名不能为空');
+            return;
+        }
+        if (isSuitNameTaken(part.key, clean, suit.id)) {
+            toast('error', '已有同名套装');
+            return;
+        }
+        if (clean !== suit.name) {
+            const renamed = await renameSuit(suit.id, clean);
+            if (!renamed || !renamed.ok) {
+                return;
+            }
+        }
+        const items = {};
+        for (const { catKey, input } of itemInputs) {
+            items[catKey] = input.value;
+        }
+        const saved = await setSuitItems(suit.id, items);
+        if (!saved || !saved.ok) {
+            return;
+        }
+        modal.remove();
+        refreshSuitModal();
+        renderOutfit();
+    };
+
+    const del = async () => {
+        if (!globalThis.confirm('删除套装「' + suit.name + '」？')) {
+            return;
+        }
+        const res = await removeSuit(suit.id);
+        if (!res || !res.ok) {
+            return;
+        }
+        modal.remove();
+        refreshSuitModal();
+        renderOutfit();
+    };
+
+    inner.appendChild(el('div', { class: 'roleEx-row roleEx-gap roleEx-end' }, [
+        el('div', {
+            class: 'menu_button roleEx-btn roleEx-danger',
+            id: 'roleEx-outfit-suit-del',
+            text: '删除套装',
+            onclick: () => { void del(); },
+        }),
+        el('div', {
+            class: 'menu_button roleEx-btn',
+            id: 'roleEx-outfit-suit-cancel',
+            text: '取消',
+            onclick: close,
+        }),
+        el('div', {
+            class: 'menu_button roleEx-btn',
+            id: 'roleEx-outfit-suit-save',
+            text: '保存',
+            onclick: () => { void save(); },
+        }),
+    ]));
+
+    modal.appendChild(inner);
     document.body.appendChild(modal);
 }
 

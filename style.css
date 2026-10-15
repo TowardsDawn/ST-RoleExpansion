@@ -806,7 +806,7 @@
     min-width: 0;
 }
 
-/* 每个分类一行：名称 + 编辑（点开编辑弹窗）；挤不下就整行换行，不做横向滚动 */
+/* 每个分类一行：名称定宽 + 编辑独立按键（点开编辑弹窗）；挤不下就整行换行，不做横向滚动 */
 .roleEx-outfit-cat {
     display: flex;
     flex-flow: row;
@@ -818,10 +818,16 @@
     flex-wrap: wrap;
 }
 
+/* 行内的按键贴到最右边（名称是定宽 flex-basis，不会自己顶开）；
+   直接子选择器就够：分类行 / 套装行里除名称外只有这一个 .menu_button */
+.roleEx-outfit-cat > .menu_button {
+    margin-left: auto;
+}
+
 .roleEx-outfit-cat-name {
-    /* 与 .roleEx-state-name 同一套账：中文全角字符约 1em 宽，分类名比状态名短一档。
-       用 em 而不是 px，跟随酒馆主题字号缩放。 */
-    flex: 0 0 6.5em;
+    /* 与 .roleEx-state-name 同一套账：中文全角字符约 1em 宽。
+       13em ≈ 10 个汉字 —— 分类名放得下，挤出去的部分靠下面的 ellipsis 收尾。 */
+    flex: 0 0 13em;
     font-weight: bold;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -842,7 +848,8 @@
     box-sizing: border-box;
 }
 
-/* 芯片行：只出现在编辑弹窗里（#roleEx-outfit-modal-chips），分类行内已经没有芯片了 */
+/* 芯片行：分类行内没有芯片了，只出现在弹窗里（分类编辑弹窗 #roleEx-outfit-modal-chips）；
+   0.11.0 起一级套装弹窗的每行里也各有一颗 .roleEx-outfit-chip（那一行不套这个容器） */
 .roleEx-outfit-chips {
     display: flex;
     flex-wrap: wrap;
@@ -870,16 +877,24 @@
     font-weight: bold;
 }
 
-/* 分类行的 编辑（编辑这个分类，目前唯一的使用者）：平时半透明，hover 才明显 */
-.roleEx-outfit-cat-btn {
-    flex: 0 0 auto;
-    cursor: pointer;
-    padding: 0 3px;
-    opacity: 0.55;
+/* 套装（一级弹窗里的列表）：一行一个套装 —— 名字占满、编辑键与芯片跟在右边 */
+.roleEx-outfit-suit-row {
+    display: flex;
+    flex-flow: row;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    border-radius: 4px;
+    background-color: var(--black30a);
+    flex-wrap: wrap;
 }
 
-.roleEx-outfit-cat-btn:hover {
-    opacity: 1;
+.roleEx-outfit-suit-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* 预览里的分组标题：小字 + 上下留白 + 顶边细分隔线 */
@@ -902,7 +917,8 @@
 }
 
 .roleEx-outfit-preview-name {
-    flex: 0 0 6.5em;
+    /* 与 .roleEx-outfit-cat-name 同宽：预览行与编辑器行的名称列对齐 */
+    flex: 0 0 13em;
     opacity: 0.7;
     overflow: hidden;
     text-overflow: ellipsis;

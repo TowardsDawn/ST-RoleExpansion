@@ -10,10 +10,13 @@
  *   第 1 行 {"__roleExpansion":"outfit-session", …}    会话头（可读的角色 / 会话名）
  *   第 2 行 {"__roleExpansion":"outfit-catalog", …}    分类表（固定分类 + 自定义分类，各带备选 tag）
  *   第 3 行 {"__roleExpansion":"outfit-selection", …}  已选 tag（按分类）
+ *   第 4 行 {"__roleExpansion":"outfit-suits", …}      套装（外 / 内 两组各自的命名组合）+ 各组选了哪一套
  *
- * 两个概念分清楚（面板上就是左边预览 / 右边编辑这两半）：
+ * 三个概念分清楚（面板上就是左边预览 / 右边编辑这两半）：
  *   tags    某分类的**备选表**（逗号分隔的原文，用户随时改）——芯片行由它生成
  *   picked  该分类里**已选中**的 tag —— 注入正文只用这一份
+ *   suits   外 / 内 两组各自的**套装**（每套 = 该组若干固定分类的 tag 列表），
+ *           另有一份 picked 只记「这一组选了哪一套」（同组互斥，最多一套）
  */
 
 export function createOutfitStore(kernel, rt) {
@@ -52,9 +55,44 @@ const FIXED_CATEGORIES = [
     { key: 'underpants', part: 'inner', name: '内裤' },
 ];
 
+/**
+ * 套装只挂在「外」「内」两组上（「其他」是自定义分类，没有固定分类，也就没有套装）。
+ * 顺序 = 面板里套装列表 / 二级弹窗的行序。
+ */
+const SUIT_PARTS = ['outer', 'inner'];
+
+/** 注入正文里 `套装=<名字>` 那一段的假分类名（jsonl 里不存它，它只是拼串时的一个名字） */
+const SUIT_CATEGORY_NAME = '套装';
+
+/**
+ * 每一组套装能填哪些分类的 items —— 就是该组的固定分类（见 FIXED_CATEGORIES），顺序即二级弹窗里的行序。
+ * 不在这张表里的 catKey 一律丢掉（归一化与 setSuitItems 共用这条判据）。
+ */
+const SUIT_ITEMS_BY_PART = {
+    outer: ['hat', 'top', 'bottom', 'socks', 'shoes'],
+    inner: ['underwear', 'underpants'],
+};
+
+/**
+ * 手改 jsonl 时**不许占用**的套装 id：两组名（outer / inner）、七个固定分类 key、
+ * 以及注入正文里那个假分类名（套装）。
+ * 理由：ui 的套装编辑按钮 id 是 `roleEx-outfit-suit-edit-<suitId>` 与 `-<part>` 两种同形模式，
+ * 手写一个叫 outer 的 id 就会造出重复 DOM id（getElementById 取到错的节点）。
+ */
+const SUIT_ID_RESERVED = new Set(SUIT_PARTS.concat(FIXED_CATEGORIES.map(def => def.key), [SUIT_CATEGORY_NAME]));
+
+/** 可保留的套装 id：单段 ASCII 1–32 字符（与模块其它名字同一条规矩，见 tools/check-filename.mjs） */
+const SUIT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
+
+/** 手改来的 id 值不值得保留（生成出来的 id 不走这条 —— uid() 是框架保证的，不拿它当嫌疑犯） */
+function isUsableSuitId(id) {
+    return typeof id === 'string' && SUIT_ID_PATTERN.test(id) && !SUIT_ID_RESERVED.has(id);
+}
+
 const KIND_SESSION = 'outfit-session';
 const KIND_CATALOG = 'outfit-catalog';
 const KIND_SELECTION = 'outfit-selection';
+const KIND_SUITS = 'outfit-suits';
 
 /** 页面级「不可用」原因 */
 const AVAIL_REASONS = new Set(['group', 'no-character', 'patch-missing', 'sub-not-allowed']);
@@ -355,9 +393,136 @@ function alignSelection(catalog, picked) {
     return out;
 }
 
-/** 解析 jsonl：会话头 / 分类 / 选择；非法行跳过并计数 */
+// ---------------------------------------------------------------------------
+// 套装模型（只有 外 / 内 两组有；对应 jsonl 第 4 行）
+// ---------------------------------------------------------------------------
+
+/** 该组的分类 key 列表（不是套装组 → 空数组） */
+function suitCatKeys(part) {
+    const keys = SUIT_ITEMS_BY_PART[part];
+    return Array.isArray(keys) ? keys : [];
+}
+
+/** 该组一件空套装 items：每个固定分类都是空数组 */
+function emptySuitItems(part) {
+    const out = {};
+    for (const key of suitCatKeys(part)) {
+        out[key] = [];
+    }
+    return out;
+}
+
+/** 空套装表 / 空已选表（key 恒定 = SUIT_PARTS，与 jsonl 第 4 行的形状一致） */
+function emptySuits() {
+    const out = {};
+    for (const part of SUIT_PARTS) {
+        out[part] = [];
+    }
+    return out;
+}
+
+function emptySuitsPicked() {
+    const out = {};
+    for (const part of SUIT_PARTS) {
+        out[part] = '';
+    }
+    return out;
+}
+
+/** items 的浅拷贝（数组也复制一份）：外面拿到的对象动不到内存里的那一份 */
+function cloneSuitItems(items) {
+    const out = {};
+    for (const key of Object.keys(items || {})) {
+        out[key] = Array.isArray(items[key]) ? items[key].slice() : [];
+    }
+    return out;
+}
+
+/** 给外面看的只读视图（拷贝，不是内部引用） */
+function suitView(suit) {
+    return { id: suit.id, name: suit.name, items: cloneSuitItems(suit.items) };
+}
+
+/**
+ * 归一化一个套装的 items：只留该组的固定分类（不在这张表里的 catKey 丢掉），
+ * 每个值走 normalizeTags()（字符串 / 数组都行，内部就是 parseTagList 的去重保序）；
+ * 没传的分类 = 空数组。
+ */
+function normalizeSuitItems(part, src) {
+    const raw = src && typeof src === 'object' && !Array.isArray(src) ? src : {};
+    const out = {};
+    for (const key of suitCatKeys(part)) {
+        out[key] = normalizeTags(raw[key]);
+    }
+    return out;
+}
+
+/**
+ * 现场要一个 id，并且保证**同一个 part 内**还没被占用（uid() 万一撞了就要下一个；
+ * 要不到就返回 ''，由调用方决定怎么办）。
+ */
+function newSuitId(seen) {
+    for (let i = 0; i < 32; i += 1) {
+        const id = String(uid() ?? '').trim();
+        if (id && !seen.has(id)) {
+            return id;
+        }
+    }
+    return '';
+}
+
+/**
+ * 归一化第 4 行（手改 JSONL 写坏了也不会炸）：
+ *   - 不在 SUIT_PARTS 里的 part → 整组丢掉；条目不是对象 → 丢掉
+ *   - 条目 name 不是字符串 / trim 后为空 → 丢掉该套装
+ *   - id 只有同时满足「单段 ASCII 1–32 字符」「不是保留名（两组名 / 七个固定分类 key / 套装）」
+ *     「同一个 part 里还没被用掉」时才原样保留，否则现场 uid() —— **只换 id，不丢条目**
+ *   - items 只留该组固定分类（缺失 = 各分类空数组）
+ *   - picked[part] 指向不存在、或不属于该 part 的套装 → 置 ''
+ * 第 4 行整行缺失（老文件）→ 空套装表，不是错误：坏行计数只看行本身，不看行内的脏字段。
+ */
+function normalizeSuits(src) {
+    const obj = src && typeof src === 'object' && !Array.isArray(src) ? src : {};
+    const suitsSrc = obj.suits && typeof obj.suits === 'object' && !Array.isArray(obj.suits) ? obj.suits : {};
+    const pickedSrc = obj.picked && typeof obj.picked === 'object' && !Array.isArray(obj.picked) ? obj.picked : {};
+    const suits = {};
+    const picked = {};
+    for (const part of SUIT_PARTS) {
+        const list = Array.isArray(suitsSrc[part]) ? suitsSrc[part] : [];
+        const out = [];
+        const seen = new Set();
+        for (const item of list) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                continue;
+            }
+            if (typeof item.name !== 'string') {
+                continue;
+            }
+            const name = item.name.trim();
+            if (!name) {
+                continue;
+            }
+            let id = isUsableSuitId(item.id) ? item.id : '';
+            if (!id || seen.has(id)) {
+                // 手改的 id 不合规、或撞了同一组里已经用掉的 → 现场换一个（不同 part 之间允许同名）
+                id = newSuitId(seen);
+            }
+            if (!id) {
+                continue;   // 极端兜底：连 uid() 都给不出 id，宁可丢掉这一条
+            }
+            seen.add(id);
+            out.push({ id, name, items: normalizeSuitItems(part, item.items) });
+        }
+        suits[part] = out;
+        const want = String(pickedSrc[part] ?? '').trim();
+        picked[part] = want && out.some(s => s.id === want) ? want : '';
+    }
+    return { suits, picked };
+}
+
+/** 解析 jsonl：会话头 / 分类 / 选择 / 套装；非法行跳过并计数 */
 function parseOutfitJsonl(text) {
-    const raw = { session: null, catalogSrc: null, pickedSrc: null, skipped: 0 };
+    const raw = { session: null, catalogSrc: null, pickedSrc: null, suitsSrc: null, skipped: 0 };
     for (const rawLine of splitLines(text)) {
         const line = rawLine.trim();
         if (!line) {
@@ -380,23 +545,35 @@ function parseOutfitJsonl(text) {
             raw.catalogSrc = obj;
         } else if (obj.__roleExpansion === KIND_SELECTION) {
             raw.pickedSrc = obj;
+        } else if (obj.__roleExpansion === KIND_SUITS) {
+            // 老文件没有第 4 行：suitsSrc 保持 null → 归一化成空套装表（不报错、也不计入坏行）
+            raw.suitsSrc = obj;
         } else {
             raw.skipped += 1;
         }
     }
     const catalog = normalizeCatalog(raw.catalogSrc);
+    const suits = normalizeSuits(raw.suitsSrc);
     return {
         session: raw.session,
         catalog,
         picked: normalizePicked(raw.pickedSrc, catalog),
+        suits: suits.suits,
+        suitPicked: suits.picked,
         skipped: raw.skipped,
     };
 }
 
-/** 写回整个文件（会话头 + 分类表 + 选择表，稳定三行） */
-function encodeOutfitJsonl(identity, catalog, picked) {
+/** 写回整个文件（会话头 + 分类表 + 选择表 + 套装表，恒定四行；前三行的结构与顺序是契约） */
+function encodeOutfitJsonl(identity, catalog, picked, suitsState) {
     const now = Date.now();
     const selection = alignSelection(catalog, picked);
+    const suits = normalizeSuits(suitsState);
+    const suitLines = { suits: {}, picked: {} };
+    for (const part of SUIT_PARTS) {
+        suitLines.suits[part] = suits.suits[part].map(suitRecord);
+        suitLines.picked[part] = suits.picked[part];
+    }
     return [
         JSON.stringify({
             __roleExpansion: KIND_SESSION,
@@ -414,17 +591,30 @@ function encodeOutfitJsonl(identity, catalog, picked) {
             updatedAt: now,
         }),
         JSON.stringify({ __roleExpansion: KIND_SELECTION, picked: selection, updatedAt: now }),
+        JSON.stringify({
+            __roleExpansion: KIND_SUITS,
+            suits: suitLines.suits,
+            picked: suitLines.picked,
+            updatedAt: now,
+        }),
     ].join('\n') + '\n';
+}
+
+/** 套装写盘时的显式字段（不整对象丢进去，与 catalog 同一约定） */
+function suitRecord(suit) {
+    return { id: suit.id, name: suit.name, items: cloneSuitItems(suit.items) };
 }
 
 // ---------------------------------------------------------------------------
 // 读 / 写
 // ---------------------------------------------------------------------------
 
-/** 内置固定分类 + 全空选择（文件不存在 / 读不到时用） */
+/** 内置固定分类 + 全空选择 + 空套装表（文件不存在 / 读不到时用） */
 function resetToEmpty() {
     rt.state.catalog = makeFixedCatalog();
     rt.state.picked = emptyPicked(rt.state.catalog);
+    rt.state.suits = emptySuits();
+    rt.state.suitPicked = emptySuitsPicked();
 }
 
 /** 本次会话的数据是否已经读过一遍（面板与运行时源都靠它避免重复请求） */
@@ -500,6 +690,8 @@ async function loadOutfit() {
     const parsed = parseOutfitJsonl(res.text);
     rt.state.catalog = parsed.catalog;
     rt.state.picked = parsed.picked;
+    rt.state.suits = parsed.suits;
+    rt.state.suitPicked = parsed.suitPicked;
     rt.state.skipped = parsed.skipped;
     if (parsed.skipped > 0 && !rt.state.skippedNote) {
         // 只提示一次：同一份文件里的坏行不必每次读都念叨一遍
@@ -513,7 +705,10 @@ async function loadOutfit() {
 async function saveOutfit() {
     const identity = rt.state.identity || currentIdentity();
     rt.state.identity = identity;
-    const text = encodeOutfitJsonl(identity, rt.state.catalog, rt.state.picked);
+    const text = encodeOutfitJsonl(identity, rt.state.catalog, rt.state.picked, {
+        suits: rt.state.suits,
+        picked: rt.state.suitPicked,
+    });
     const res = await writeAssetText(SUB, identity.fileName, text);
     if (!res.ok) {
         logError('write outfit jsonl failed', identity.fileName, res.reason);
@@ -533,12 +728,16 @@ async function persistChange(apply) {
     const snapshot = {
         catalog: clone(rt.state.catalog),
         picked: clone(rt.state.picked),
+        suits: clone(rt.state.suits),
+        suitPicked: clone(rt.state.suitPicked),
     };
     const extra = apply() || null;
     const res = await saveOutfit();
     if (!res.ok) {
         rt.state.catalog = snapshot.catalog;
         rt.state.picked = snapshot.picked;
+        rt.state.suits = snapshot.suits;
+        rt.state.suitPicked = snapshot.suitPicked;
         toast('error', '衣装保存失败：' + res.text);
         return { ok: false, reason: res.reason, text: res.text };
     }
@@ -568,21 +767,84 @@ function isCategoryNameTaken(name, exceptKey = '') {
     return rt.state.catalog.some(c => c.key !== exceptKey && c.name === clean);
 }
 
+// ---- 套装查询（同组互斥：一组最多选中一套）----
+
+/** 内部：按 id 找套装本体（内存里的那一份）+ 它属于哪一组 */
+function findSuitEntry(id) {
+    const want = String(id ?? '').trim();
+    if (!want) {
+        return null;
+    }
+    for (const part of SUIT_PARTS) {
+        const suit = (rt.state.suits[part] || []).find(s => s.id === want);
+        if (suit) {
+            return { part, suit };
+        }
+    }
+    return null;
+}
+
+/** 该组的套装数组：顺序 = 用户新建顺序；part 不是套装组 → []。返回拷贝，外面动不到内存里的那份 */
+function getSuits(part) {
+    const list = SUIT_PARTS.includes(part) ? rt.state.suits[part] : null;
+    return Array.isArray(list) ? list.map(suitView) : [];
+}
+
+/** 该组当前选中的套装 id；没选 / part 不是套装组 → '' */
+function getPickedSuit(part) {
+    if (!SUIT_PARTS.includes(part)) {
+        return '';
+    }
+    const id = String(rt.state.suitPicked[part] ?? '');
+    return id && (rt.state.suits[part] || []).some(s => s.id === id) ? id : '';
+}
+
+/** 按 id 找套装（给 UI 预填二级弹窗用）：找不到 → null。返回拷贝 */
+function suitById(id) {
+    const entry = findSuitEntry(id);
+    return entry ? suitView(entry.suit) : null;
+}
+
+/** 该组当前选中的套装本体（拼注入正文用）：没选 → null */
+function pickedSuitOfPart(part) {
+    const id = getPickedSuit(part);
+    const entry = id ? findSuitEntry(id) : null;
+    return entry ? entry.suit : null;
+}
+
+/** 散装选中项在前、套装 items 在后，整体去重保序（同一个 tag 只出现一次） */
+function mergeLooseAndSuit(loose, suitItems) {
+    const out = [];
+    const merged = (Array.isArray(loose) ? loose : []).concat(Array.isArray(suitItems) ? suitItems : []);
+    for (const tag of merged) {
+        if (typeof tag === 'string' && tag && !out.includes(tag)) {
+            out.push(tag);
+        }
+    }
+    return out;
+}
+
 /**
  * 注入用的正文（**不含** index.js 里那个模板）：
- * 每部分一行，行内 `分类名=tag1 / tag2`，分类之间用 `；`；
- * 空的部分整行不出现；一个选中项都没有时返回空串。
+ * 每部分一行，行内以 `套装=<该组已选套装名>` 打头（**只有该组真的选中了套装才写这一段**，
+ * 没选就整段不出现），随后是各分类 `分类名=tag1 / tag2`，分类之间用 `；`；
+ * 某个分类的值 = 散装选中项 + 该组套装在这个分类里的 items（散装在前、套装项在后，整体去重保序）；
+ * 空分类跳过；空的部分整行不出现；一个内容都没有时返回空串。
  */
 function buildOutfitList() {
     const selection = getSelection();
     const lines = [];
     for (const part of PARTS) {
         const chunks = [];
+        const suit = pickedSuitOfPart(part.key);
+        if (suit) {
+            chunks.push(SUIT_CATEGORY_NAME + '=' + suit.name);
+        }
         for (const cat of rt.state.catalog) {
             if (cat.part !== part.key) {
                 continue;
             }
-            const tags = selection[cat.key] || [];
+            const tags = mergeLooseAndSuit(selection[cat.key], suit?.items?.[cat.key]);
             if (!tags.length) {
                 continue;
             }
@@ -675,6 +937,118 @@ function removeCustomCategory(key) {
     });
 }
 
+// ---- 套装编辑（只有 外 / 内 两组有；全部走 persistChange）----
+
+/** 名字在该组里是否已被占用（**组内**唯一；两组之间可以重名） */
+function isSuitNameTaken(part, name, exceptId = '') {
+    if (!SUIT_PARTS.includes(part)) {
+        return false;
+    }
+    const clean = String(name ?? '').trim();
+    if (!clean) {
+        return false;
+    }
+    const keep = String(exceptId ?? '');
+    return (rt.state.suits[part] || []).some(s => s.id !== keep && s.name === clean);
+}
+
+/**
+ * 选中该组的某一套 / 取消。**同组互斥**：一组只有一个 picked，设成新 id 就是清掉原来那套。
+ * 传 ''、或再点一次当前已选的那一套 = 取消（置 ''）；id 不属于该组 → 拒绝，不写盘。
+ */
+function pickSuit(part, id) {
+    if (!SUIT_PARTS.includes(part)) {
+        return Promise.resolve({ ok: false, reason: 'no-part' });
+    }
+    const want = String(id ?? '').trim();
+    if (want && !(rt.state.suits[part] || []).some(s => s.id === want)) {
+        return Promise.resolve({ ok: false, reason: 'no-suit' });
+    }
+    const current = getPickedSuit(part);
+    const next = want === current ? '' : want;
+    if (next === current) {
+        // 本来就是空的、又收到一次「取消」：没有任何变化，不必多写一次盘
+        return Promise.resolve({ ok: true, reason: null, text: '' });
+    }
+    return persistChange(() => {
+        rt.state.suitPicked[part] = next;
+    });
+}
+
+/** 新建一套（落在该组末尾 = 用户新建顺序）；空名 / 同组重名直接拒绝、不写盘 */
+function addSuit(part, name) {
+    if (!SUIT_PARTS.includes(part)) {
+        return Promise.resolve({ ok: false, reason: 'no-part' });
+    }
+    const clean = String(name ?? '').trim();
+    if (!clean) {
+        return Promise.resolve({ ok: false, reason: 'empty-name' });
+    }
+    if (isSuitNameTaken(part, clean)) {
+        return Promise.resolve({ ok: false, reason: 'duplicate-name' });
+    }
+    const id = newSuitId(new Set((rt.state.suits[part] || []).map(s => s.id))) || String(uid() ?? '').trim();
+    return persistChange(() => {
+        rt.state.suits[part] = (rt.state.suits[part] || []).concat([{
+            id, name: clean, items: emptySuitItems(part),
+        }]);
+        return { id };
+    });
+}
+
+/** 改名（空名 / 同组重名 / 找不到都拒绝） */
+function renameSuit(id, name) {
+    const entry = findSuitEntry(id);
+    if (!entry) {
+        return Promise.resolve({ ok: false, reason: 'no-suit' });
+    }
+    const clean = String(name ?? '').trim();
+    if (!clean) {
+        return Promise.resolve({ ok: false, reason: 'empty-name' });
+    }
+    if (isSuitNameTaken(entry.part, clean, entry.suit.id)) {
+        return Promise.resolve({ ok: false, reason: 'duplicate-name' });
+    }
+    return persistChange(() => {
+        rt.state.suits[entry.part] = rt.state.suits[entry.part]
+            .map(s => (s.id === entry.suit.id ? Object.assign({}, s, { name: clean }) : s));
+    });
+}
+
+/**
+ * 该套装 items **整表替换**：只认本组的固定分类（其余 catKey 丢弃），没传的分类 = 空数组。
+ * 每个值当原文走 parseTagList()（去重保序）—— 与备选表同一套切分规则。
+ */
+function setSuitItems(id, items) {
+    const entry = findSuitEntry(id);
+    if (!entry) {
+        return Promise.resolve({ ok: false, reason: 'no-suit' });
+    }
+    const src = items && typeof items === 'object' && !Array.isArray(items) ? items : {};
+    const next = {};
+    for (const key of suitCatKeys(entry.part)) {
+        next[key] = parseTagList(src[key]);
+    }
+    return persistChange(() => {
+        rt.state.suits[entry.part] = rt.state.suits[entry.part]
+            .map(s => (s.id === entry.suit.id ? Object.assign({}, s, { items: next }) : s));
+    });
+}
+
+/** 删除一套；它正是该组已选中的那套时，连带把该组的 picked 置空 */
+function removeSuit(id) {
+    const entry = findSuitEntry(id);
+    if (!entry) {
+        return Promise.resolve({ ok: false, reason: 'no-suit' });
+    }
+    return persistChange(() => {
+        rt.state.suits[entry.part] = rt.state.suits[entry.part].filter(s => s.id !== entry.suit.id);
+        if (rt.state.suitPicked[entry.part] === entry.suit.id) {
+            rt.state.suitPicked[entry.part] = '';
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // 工厂里的状态初始化（重复调用无副作用）
 // ---------------------------------------------------------------------------
@@ -686,6 +1060,10 @@ function removeCustomCategory(key) {
     // 固定分类先补齐、坏条目先丢掉：面板在任何时候打开都能画出完整的三组
     rt.state.catalog = normalizeCatalog({ categories: rt.state.catalog });
     rt.state.picked = normalizePicked({ picked: rt.state.picked }, rt.state.catalog);
+    // 套装同理：未知 part / 空名 / 坏 items 先丢掉，缺 id 的补一个（结果写回 state，重复调用不再变）
+    const suitsState = normalizeSuits({ suits: rt.state.suits, picked: rt.state.suitPicked });
+    rt.state.suits = suitsState.suits;
+    rt.state.suitPicked = suitsState.picked;
     if (!rt.state.identity) {
         rt.state.identity = null;
     }
@@ -713,12 +1091,13 @@ function removeCustomCategory(key) {
 }());
 
     return {
-        AVAIL_REASONS, FIXED_CATEGORIES, KIND_CATALOG, KIND_SELECTION, KIND_SESSION, PAGE_REASONS, PARTS, PART_KEYS,
-        PREFIX, REPROBE_MIN_INTERVAL_MS, SUB,
-        addCustomCategory, alignSelection, armOutfitReprobe, buildOutfitList, currentIdentity, emptyPicked,
-        encodeOutfitJsonl, findCategory, getCatalog, getSelection, isCategoryNameTaken, loadOutfit, makeFixedCatalog,
-        normalizeCatalog, normalizePicked, normalizeTags, outfitAvailability, outfitPathText, outfitReasonText,
-        parseOutfitJsonl, parseTagList, persistChange, probeOutfitStorage, removeCustomCategory, renameCustomCategory,
-        resetToEmpty, saveOutfit, setCategoryTags, toPageReason, togglePicked,
+        AVAIL_REASONS, FIXED_CATEGORIES, KIND_CATALOG, KIND_SELECTION, KIND_SESSION, KIND_SUITS, PAGE_REASONS, PARTS,
+        PART_KEYS, PREFIX, REPROBE_MIN_INTERVAL_MS, SUB, SUIT_CATEGORY_NAME, SUIT_ITEMS_BY_PART, SUIT_PARTS,
+        addCustomCategory, addSuit, alignSelection, armOutfitReprobe, buildOutfitList, currentIdentity, emptyPicked,
+        encodeOutfitJsonl, findCategory, getCatalog, getPickedSuit, getSelection, getSuits, isCategoryNameTaken,
+        isSuitNameTaken, loadOutfit, makeFixedCatalog, normalizeCatalog, normalizePicked, normalizeSuits,
+        normalizeTags, outfitAvailability, outfitPathText, outfitReasonText, parseOutfitJsonl, parseTagList,
+        persistChange, pickSuit, probeOutfitStorage, removeCustomCategory, removeSuit, renameCustomCategory,
+        renameSuit, resetToEmpty, saveOutfit, setCategoryTags, setSuitItems, suitById, toPageReason, togglePicked,
     };
 }
