@@ -46,12 +46,16 @@ export default {
     id: 'outfit',
     title: '衣装打扮',
     icon: 'fa-solid fa-shirt',
-    defaults: { outfitInjectPrompt: '[以下是 {{char}} 当前的衣装打扮，请在描写与对话中保持一致]\n{{outfitList}}' },
+    defaults: {
+        outfitInjectPrompt: '[以下是 {{char}} 当前的衣装打扮，请在描写与对话中保持一致]\n{{outfitList}}',
+        outfitWIScan: false,     // 是否把同一份正文也喂给世界书扫描（默认关，见 §5.6）
+    },
     create(kernel) { /* … */ },
 };
 ```
 
-- `defaults` 里**只有一条** `outfitInjectPrompt`（注入模板，默认两行：标题行 + `{{outfitList}}`）。
+- `defaults` 里是**两条**：`outfitInjectPrompt`（注入模板，默认两行：标题行 + `{{outfitList}}`）与
+  `outfitWIScan`（是否把同一份正文也登记成世界书扫描源，**默认 `false`**，见 §5.6）。
   框架启动时并进 `DEFAULT_SETTINGS`，并参与「存为默认设置 / 恢复默认设置」的基准（§1.5、主 DEVELOPMENT §4.5）。
 - `modules/manifest.json` 里也写了同一份 `title` / `icon`（清单里那份只作清单展示，**模块自己声明的优先**）。
 - `icon` 是 Font Awesome class；`ui.js` 用框架的 `iconFor(sectionRoot, 'fa-solid fa-shirt')` 把它塞进标题行。
@@ -85,9 +89,14 @@ export default {
 | 文件 | 取的设施 |
 | --- | --- |
 | `store.js` | `assetPathText` `assetReasonText` `clone` `ctx` `logError` `probeAssetStorage` `readAssetText` `splitLines` `stableHash` `toast` `uid` `writeAssetText` |
-| `inject.js` | `MODULE_NAME` `PROMPT_MANAGER_PREFIX` `ctx` `logError` `renderTemplateString` `settings`（getter） |
-| `ui.js` | `collapsible` `debounce` `el` `iconFor` `section` `settings`（getter） `toast` `updateSetting` |
+| `inject.js` | `MODULE_NAME` `PROMPT_MANAGER_PREFIX` `ctx` `logError` `renderTemplateString` `settings`（getter） `registerWiScanSource`（§5.6） |
+| `ui.js` | `checkboxRow` `collapsible` `debounce` `el` `iconFor` `section` `settings`（getter） `supportsWiScanSource` `toast` `updateSetting` |
 | `index.js`（本模块的） | `el`（只用在 `settingsBlock()` 里） |
+
+> `inject.js` 取 `registerWiScanSource` 时**不写进文件顶部的解构**，而是现取 `kernel.registerWiScanSource`：
+> 它可能整个不存在（旧版框架 / 自测里的假 kernel），解构出来再调用会抛；现取 + `typeof` 判断就能按「不支持」降级。
+> `ui.js` 同理：`kernel.supportsWiScanSource` 由一个本地壳 `supportsWiScanSource()` 现取现判
+> （成员缺失 → 按不支持 → 复选框禁用 + hint 说明，见 §5.6）。
 
 `settings` / `ui` 是**长期同一个对象**（框架用 `replaceSettings()` 就地替换内容，身份不变），
 所以不要缓存它们的字段快照 —— 与推特 / 状态栏同一约定。
@@ -426,6 +435,8 @@ register(PRESET_PROMPT.ID, getContent, { name: PRESET_PROMPT.SOURCE_NAME, edit: 
 - `registerRuntimePromptSource` 不存在（没打 `st-marker-prompt.patch`）时返回 `false`，**不抛**。
 - 注册成功后调一次 `patchPromptManagerFirstRender()`：ST 的首屏预设列表渲染发生在我们注册**之前**，
   不补这一次，那一行就没有「铅笔 / 开关」（机制与日记模块完全一样，见主 DEVELOPMENT §4.1）。
+- 注册成功后还会把**同一个 `getContent`** 登记成世界书扫描源（`ensureWiScanSource()`，§5.6）：
+  卡片这条路先立起来，扫描是它的可选附加 —— 这一步失败不影响上面任何一步。
 
 ### 5.2 三道闸（顺序不能乱）
 
@@ -495,6 +506,31 @@ adoptOutfitCardStateFromPreset: adoptCardStateFromPreset,
 （`callModule` 找不到名字 → 返回 `undefined`，不抛），所以这里用**别名**对齐：
 两个名字指向同一个函数，改任何一个名字时**必须同时改**壳与这里（§7 第 1 条）。
 
+### 5.6 世界书扫描源（`outfitWIScan`，默认关）
+
+**为什么不能省这一步**：世界书扫描（ST 的 `checkWorldInfo()`）在扫描开始时遍历 `extensionPrompts`，
+只挑 `scan === true` 的条目把正文塞进 haystack。卡片走的是**运行时正文源**（§5.1），
+它**不在** `extensionPrompts` 里 —— 所以「卡片有正文」并不等于「衣装参与世界书扫描」。
+而那一层 haystack **不受 scan depth 截断、在所有扫描轮次（含递归轮）都可见**，影响面比注入大得多，
+所以扫描单独一个开关、**默认关**。
+
+```js
+// ensureRuntimePromptSource()：注册运行时源成功之后
+ensureWiScanSource(getContent);   // getContent 就是上面那一份（三道闸 + 正文拼装）
+
+// ensureWiScanSource()：开关只包在**外面**这一层
+kernel.registerWiScanSource(WI_SCAN_SOURCE_ID, () => (settings.outfitWIScan ? getContent() : ''));
+```
+
+| 要点 | 说明 |
+| --- | --- |
+| **同源** | 组装期（预设卡片）与扫描期（世界书）**共用同一个 `getContent`**：三道闸与正文拼装只有一处实现，「扫到的」与「注入的」永远同一份文本 |
+| **开关包在外面** | `settings.outfitWIScan` 只出现在**外面**那一层箭头函数里。**绝不能读进 `getContent` 本体** —— 那份函数是两个通道共用的，读进去就等于「关掉世界书扫描」顺带把预设卡片也变成没有正文（一个开关连坐另一个功能）。所以 `getContent` 被提成一个具名 `const`，两处登记共用它 |
+| 幂等 | `wiScanRegistered` + `wiScanSourceForId`（沿用 §5.1 那一对记忆变量的写法）；只在运行时源注册成功之后登记，重复调用直接返回 `true` |
+| 失败 | `kernel.registerWiScanSource` 在补丁缺失 / 登记抛错时返回 `false` 而**不抛**（框架侧自己 warn），这里**不报错、不重试**：没登记上可降级（大不了衣装不参与世界书扫描）。框架连这个成员都没有（旧版 / 自测的假 kernel）时同样返回 `false` |
+| 界面 | `ui.js` 用 `kernel.supportsWiScanSource()` 判定：`false` → 复选框 `disabled = true` + hint 明说「ST 补丁 st-wi-scan-source 未生效，此项不可用」（**绝不静默**） |
+| 标识 | `WI_SCAN_SOURCE_ID = PRESET_PROMPT.ID`（同一个字符串）：一个模块一个标识，排查时一眼对得上 |
+
 ---
 
 ## 6. 面板结构（DOM 与 id）
@@ -529,7 +565,12 @@ buildOutfitPanel() → section('衣装打扮', { open: false })          ← 默
       ├─ .inline-drawer-toggle.inline-drawer-header.roleEx-fold-header「注入模板」
       └─ .inline-drawer-content.roleEx-fold-body
          ├─ .roleEx-hint（变量说明：{{outfitList}} 是已选的衣装；{{char}} / {{user}} 走酒馆宏）
-         └─ textarea.text_pole.roleEx-textarea#roleEx-outfit-inject-prompt（rows=4）
+         ├─ textarea.text_pole.roleEx-textarea#roleEx-outfit-inject-prompt（rows=4）
+         └─ label.roleEx-checkbox-row#roleEx-outfit-wi-scan-row（「纳入世界书扫描」，见 §5.6）
+            ├─ input[type=checkbox]（id 由框架的 checkboxRow 现生成 —— label 的 for 与它绑定，模块不自己定 id）
+            └─ .roleEx-checkbox-text
+               ├─ span.roleEx-checkbox-label（「纳入世界书扫描」）
+               └─ span.roleEx-hint（写了补丁要求与副作用；补丁缺失时这句换成「…未生效，此项不可用」且 input 禁用）
 ```
 
 > 三种「行」长得一样（`.roleEx-outfit-cat`）：分类行、套装行、以及弹窗里的套装行是**同一套视觉**。
@@ -656,8 +697,8 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 
 ## 7. 与冻结规格不同 / 需要点明的实现取舍
 
-十五条都已经落地（1–4 是冻结规格核对时的取舍，5–8 是 **0.10.1 面板重做**带出来的，
-9–15 是 **0.11.0 形态统一 + 套装子模型**带出来的），写在这里免得后人以为是漏改：
+十六条都已经落地（1–4 是冻结规格核对时的取舍，5–8 是 **0.10.1 面板重做**带出来的，
+9–15 是 **0.11.0 形态统一 + 套装子模型**带出来的，16 是世界书扫描源带出来的），写在这里免得后人以为是漏改：
 
 1. **`inject.js` 同时导出带 `Outfit` 的别名**（`ensureOutfitRuntimeSource` / `adoptOutfitCardStateFromPreset`）。
    冻结规格里只有 `ensureRuntimePromptSource` / `adoptCardStateFromPreset`；
@@ -719,6 +760,11 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
     `addSuit()` 再用一次裸 `uid()` 兜底；`normalizeSuits()` 里则宁可丢掉这一条也不写没有 id 的套装。
 15. **`getSuits()` / `suitById()` 返回深拷贝**（`suitView()` 逐格复制 `items`）：UI 拿着的是快照，
     改它不会动到 store 的内存 —— 与 `getCatalog()` / `getSelection()` 同一约定。
+16. **世界书扫描是「外面包一层」的第二条通道，不动 `getContent` 本体**（§5.6）：
+    组装期（预设卡片）与扫描期（世界书）共用同一个正文源，扫描开关（`outfitWIScan`，**默认关**）只包在外面。
+    图省事把 `settings.outfitWIScan` 读进 `getContent` 里面，「关掉世界书扫描」就会顺带把预设卡片也变成没有正文
+    —— 两个功能连坐，是**必须避免**的写法；所以 `getContent` 被提成具名 `const`，两处登记共用。
+    代价是多一次登记与一对记忆变量（`wiScanRegistered` / `wiScanSourceForId`），换来两条通道永远同源。
 
 ---
 
@@ -751,6 +797,7 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 | `ensureOutfitRuntimeSource()` | 手动确保运行时正文源已注册（返回 `true` / `false`）—— 排查「卡片没正文」的第一步 |
 | `adoptOutfitCardStateFromPreset()` / `updateOutfitPresetCardHint()` | 刷新「扩展」设置面板里那块诊断文案 |
 | `settings.outfitInjectPrompt` | 注入模板（活引用，改完立即生效，不必刷新页面） |
+| `settings.outfitWIScan` | 是否把同一份正文也喂给世界书扫描（活引用；默认 `false`，见 §5.6） |
 | `assetPathText('outfit', name)` | 落点文案 `chats/<角色>/_RoleExpansion/outfit/<name>` |
 | `probeAssetStorage('outfit')` | 框架侧资源通道的只读探针（区分「缺补丁」与「角色目录不可达」） |
 | `journalAvailability()` | 群聊 / 没选角色 的权威判据（资源通道与日记共用同一套） |
@@ -764,7 +811,7 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 `addCustomCategory` `renameCustomCategory` `removeCustomCategory` `parseTagList` `normalizeCatalog`
 `normalizePicked` `encodeOutfitJsonl` `buildOutfitList` `currentIdentity` `buildOutfitPanel`
 `renderStatus` `renderPreview` `renderEditor` `buildCategoryRow` `openCategoryModal` `outfitFoldOpen`
-`onAddCategory` `openPresetPanel` `describeOutfitCard` `diagnoseOutfitCard` `readOutfitCard`；
+`onAddCategory` `openPresetPanel` `describeOutfitCard` `diagnoseOutfitCard` `readOutfitCard` `ensureWiScanSource`；
 **套装那一整套**同样调不到：`pickSuit` `addSuit` `renameSuit` `setSuitItems` `removeSuit` `getSuits`
 `getPickedSuit` `suitById` `isSuitNameTaken` `normalizeSuits` `newSuitId` `isUsableSuitId`
 `buildSuitRow` `openSuitModal` `openSuitEditModal` `refreshSuitModal` `onAddSuit` `mergeLooseAndSuit` `mergeTags`。
@@ -781,6 +828,9 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
   （这一条**会**置灰面板，并把 `rt.state.reason` 记成 `sub-not-allowed`）
 - 注册失败：`registerRuntimePromptSource failed`
 - 补丁检测：`[ST-RoleExpansion] ST 补丁已生效（衣装）：…` / `ST 补丁不完整，衣装卡片会没有开关/铅笔。`
+- 世界书扫描源没登记上（缺 `st-wi-scan-source` 补丁）：框架侧 warn 一条
+  `ST 侧 st-wi-scan-source 补丁未生效，roleExpansionOutfit 不参与世界书扫描` ——
+  与面板上那一行开关被禁用指向同一件事（这里**不抛、不重试**）
 - 卡片诊断（`quiet: false` 时）：`[ST-RoleExpansion] 诊断：衣装卡片状态`
 
 排查顺序建议：`roleExpansion.modules()` 看模块在不在、启没启用 → 面板状态行看原因 →
@@ -807,6 +857,7 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 | 导入 / 导出 | **没有**（日记模块那套导入导出没有搬过来） |
 | 资源通道 | 依赖 `patches/st-twitter-assets.patch`，且服务端 `ALLOWED_SUBDIRS` 里必须有 `outfit`。**端点不存在**（404）→ `patch-missing`；**端点存在但白名单里没有 `outfit`**（400）→ 归一成 `sub-not-allowed`（§4.5）。两者**同级**：红字 + 两栏置灰，文案由 `outfitReasonText()` 给出「改白名单 + 重启酒馆主进程」的可照做指引；修好后**再点开一次面板就会自动重探**，不必 F5。**不回退**到别的位置 |
 | 运行时源注册时机 | `ensureOutfitRuntimeSource()` 只在预设切换路径上被调（`bootstrap()` / `APP_READY` 里没有，§1.5） |
+| 世界书扫描 | **默认关**（`outfitWIScan`）；打开后衣装正文才参与世界书扫描（那一层**不受 scan depth 截断、含递归轮**）。需要 ST 侧 `st-wi-scan-source` 补丁；缺补丁或框架没这个成员时 `kernel.registerWiScanSource` 返回 `false`（**不抛、不重试**），面板那一行开关 `disabled` 并写明原因（§5.6） |
 | 面板钩子 | 只有 `buildPanelSection()` 与 `settingsBlock()`：`services` 是空对象（不对外提供服务）、**没有** `debug`（预留能力，框架目前不读） |
 | `rt.state.loaded` | 只在 `loadOutfit()` / `saveOutfit()` 里置 `true`，只有 `renderOutfit()` 的自愈加载读它 |
 | i18n | 界面文案全是硬编码简体中文，没走酒馆的 `t()` |

@@ -25,6 +25,9 @@ const DEFAULTS = {
         '[以下是 {{char}} 当前的衣装打扮，请在描写与对话中保持一致]',
         '{{outfitList}}',
     ].join('\n'),
+    // 是否把同一份卡片正文也登记成世界书扫描源（默认关：扫描那一层不受 scan depth 截断，
+    // 比「注入主聊天」的影响面大得多）。需要 ST 侧 st-wi-scan-source 补丁，见 inject.js。
+    outfitWIScan: false,
 };
 
 export default {

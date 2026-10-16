@@ -38,6 +38,16 @@ function buildStatePanel() {
         applyStateInjection();
     });
 
+    // 扫描源与注入同源，但走的是另一条通道（ST 的扫描线）；补丁缺失时必须明说不可用 ——
+    // 否则勾选框看起来能开、实际什么都没发生，正是仓库里禁止的静默失败。
+    const wiScanSupported = kernel.supportsWiScanSource();
+    const wiScanToggle = el('input', { type: 'checkbox' });
+    wiScanToggle.checked = settings.stateWIScan === true;
+    if (!wiScanSupported) {
+        wiScanToggle.disabled = true;
+    }
+    wiScanToggle.addEventListener('change', () => updateSetting('stateWIScan', wiScanToggle.checked));
+
     const stripToggle = el('input', { type: 'checkbox' });
     stripToggle.checked = settings.stateStripTags !== false;
     stripToggle.addEventListener('change', () => updateSetting('stateStripTags', stripToggle.checked));
@@ -150,7 +160,7 @@ function buildStatePanel() {
     });
 
     // 层次与推特模块一致：正文里直接是**平铺内容 + 同级折叠块**，不再套 .roleEx-block。
-    // 五个开关本来就没有标题，按推特「正文内容直接平铺」的写法排在最前面（不额外造一个标题）；
+    // 六个开关本来就没有标题，按推特「正文内容直接平铺」的写法排在最前面（不额外造一个标题）；
     // 「状态列表」原本是区块里的一个 roleEx-label，现在由折叠块 header 承担标题（默认展开，与以前一样可见）。
     const listFold = collapsible('状态列表（随会话保存）', { open: true });
     listFold.root.setAttribute('id', 'roleEx-state-list-fold');
@@ -165,6 +175,10 @@ function buildStatePanel() {
     s.content.append(
         checkboxRow(enableToggle, '启用角色状态栏', '关闭后停止注入与标签解析'),
         checkboxRow(injectToggle, '发送前注入状态提示', '使用下方可自由修改的提示词模板'),
+        checkboxRow(wiScanToggle, '纳入世界书扫描',
+            wiScanSupported
+                ? '把同一份状态文本喂给世界书扫描；需要 ST 侧 st-wi-scan-source 补丁'
+                : 'ST 补丁 st-wi-scan-source 未生效，此项不可用'),
         checkboxRow(stripToggle, '从聊天消息中剥离状态标签', '关闭后标签仍用于更新数据，但会留在正文里'),
         checkboxRow(journalLinkToggle, '状态并入日记生成提示', '生成日记时把当前状态作为参考'),
         checkboxRow(knownOnlyToggle, '只接受已知状态名（推荐）', '模型只更新状态列表里已有的项；关闭后，回复里的新 <名称>值</名称> 会自动加进列表'),

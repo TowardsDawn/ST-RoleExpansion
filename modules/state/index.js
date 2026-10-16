@@ -15,6 +15,9 @@ const DEFAULTS = {
     // 状态栏
     stateEnabled: true,
     stateAutoInject: true,
+    // 把同一份状态文本登记为「世界书扫描源」（需要 ST 侧 st-wi-scan-source 补丁；缺补丁时面板上禁用）。
+    // 默认关：它让世界书在**所有扫描轮次**都看得到状态（不受 scan depth 截断），属于要用户明确选择的增强。
+    stateWIScan: false,
     stateStripTags: true,
     stateInjectDepth: 0,
     stateInjectRole: 'system',

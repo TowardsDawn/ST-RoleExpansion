@@ -8,7 +8,7 @@
 ```
 index.js   描述符（id / title / icon / defaults）+ create(kernel) 组装 + services
 store.js   chatMetadata 读写（按会话隔离）+ 旧键一次性迁移
-inject.js  往主聊天注入状态文本 + 解析 / 剥离 <名称>值</名称> 标签
+inject.js  往主聊天注入状态文本 + 登记世界书扫描源 + 解析 / 剥离 <名称>值</名称> 标签
 ui.js      「角色状态栏」面板（平铺的开关 / 状态列表折叠块 / 注入提示词折叠块）
 ```
 
@@ -103,6 +103,7 @@ stateList: stateEnabled ? (buildStateText() || '（暂无状态）') : '（未�
 | --- | --- | --- |
 | `stateEnabled` | `true` | `applyStateInjection()`（注入三条件之一）、`onCharacterMessageReceived()`（总闸）、面板勾选框 |
 | `stateAutoInject` | `true` | `applyStateInjection()`（注入三条件之一） |
+| `stateWIScan` | `false` | `createStateInject()` 注册的扫描源 getter（`settings.stateWIScan ? buildStateInjectionText() : ''`）；读法必须是 `=== true`，面板勾选框；`kernel.supportsWiScanSource()` 为 false 时该框禁用 |
 | `stateStripTags` | `true` | `onCharacterMessageReceived()`：`!== false` 才把剥离结果写回 `last.mes` |
 | `stateInjectDepth` | `0` | `applyStateInjection()` 的第 4 个参数 |
 | `stateInjectRole` | `'system'` | `applyStateInjection()`：`'assistant'` → `EXT_ROLE_ASSISTANT`，`'user'` → `1`，其余 → `EXT_ROLE_SYSTEM` |
@@ -259,26 +260,46 @@ applyStateInjection();
 
 ## 5. 注入实现
 
+注入与扫描共用**同一个**文本函数 `buildStateInjectionText()`（`inject.js`）—— 三个闸判完返回 `''`，
+否则返回 `renderTemplateString(settings.stateInjectPrompt, { stateList: buildStateText() })`。
+
 ```js
 c.setExtensionPrompt(
     EXT_PROMPT_KEY.STATE,       // 'RoleExpansion_State'
-    text,                       // renderTemplateString(settings.stateInjectPrompt, { stateList: buildStateText() })
+    text,                       // buildStateInjectionText() → renderTemplateString(settings.stateInjectPrompt, { stateList: buildStateText() })
     EXT_POSITION_IN_CHAT,       // 1（in-chat）
     depth,                      // Math.max(0, Math.trunc(Number(settings.stateInjectDepth)))；非有限数 → 0
-    false,                      // 第 5 个参数（自测桩里叫 scan）固定 false
+    false,                      // 第 5 个参数（自测桩里叫 scan）固定 false，理由见下「扫描源」小节
     role,                       // 'assistant' → EXT_ROLE_ASSISTANT(2)；'user' → 1；其余 → EXT_ROLE_SYSTEM(0)
 );
 ```
 
 - **常量来源**：`EXT_POSITION_IN_CHAT = 1` / `EXT_ROLE_SYSTEM = 0` / `EXT_ROLE_ASSISTANT = 2` 是 `index.js` 顶部「从 ST 源码抄过来的枚举值」
   （注释里写明对应 ST 的 `extension_prompt_types` 与 `extension_prompt_roles`，为避免静态 import `script.js` 造成路径脆弱）。
-- **关闭 / 禁用 / 列表为空时的清空路径**：`!stateEnabled || !stateAutoInject || !list.length` 时调用同一个 key 写入空串
-  （`'' , EXT_POSITION_IN_CHAT, 0, false, EXT_ROLE_SYSTEM`），确保面板上看不到旧内容。
+- **关闭 / 禁用 / 列表为空时的清空路径**：`buildStateInjectionText()` 返回 `''`（三闸任一不满足，或模板被清空）时，
+  走同一个 key 写入空串（`'' , EXT_POSITION_IN_CHAT, 0, false, EXT_ROLE_SYSTEM`），确保面板上看不到旧内容。
 - **拿不到 `setExtensionPrompt` 就直接 return**（旧版酒馆 / 桩环境），不抛。
 - **文本拼装**：`buildStateText()` = `list.map(i => `${i.name} ${i.value}`).join('\n')`；列表为空返回 `''`。
 - **模板替换**：`renderTemplateString()` 先按 `{{stateList}}` 做**纯字符串 split/join**（不是正则，值里有 `$&` 也安全），
   剩下的 `{{char}}` / `{{user}}` 交给 `ctx().substituteParams()`（失败只 `logError` 并返回半成品）。
   服务端 / 日志里看到的就是替换后的最终文本。
+
+### 5.1 扫描源（世界书扫描）
+
+`createStateInject(kernel, rt)` 在**工厂执行时**（模块求值，不是等面板打开）登记一次：
+
+```js
+kernel.registerWiScanSource('roleExpansionState', () => (settings.stateWIScan ? buildStateInjectionText() : ''));
+```
+
+- **文本与注入同源**：同一个 `buildStateInjectionText()`、同一个模板、同一个 `{{stateList}}`。
+  所以上面注入那条的第 5 个参数（`scan`）必须继续是 `false` —— 同一段正文进 haystack 两次纯属浪费上下文。
+- **为什么值得单独走扫描**：ST 扫描时只把 `scan === true` 的 `extensionPrompts` 条目正文并入 haystack，
+  那一层**不受 scan depth 截断、且在包括递归轮在内的所有扫描轮次都可见**；注入那条按深度插在正文中部，未必落在扫描窗口内。
+- **一次性登记，不重试、不轮询**：`kernel.registerWiScanSource` 对「补丁缺失 / 登记抛错」返回 `false` 而不抛（返回值本模块不关心）；
+  getter 是**每次扫描时才求值**，因此补丁晚一步生效、用户中途改开关都能立刻反映，不需要重登记。
+- **补丁缺失时不静默**：`ui.js` 用 `kernel.supportsWiScanSource()` 判断，为 `false` 时把复选框 `disabled = true`
+  并把行内说明换成「ST 补丁 st-wi-scan-source 未生效，此项不可用」。绝不出现「能勾但没用」的假开关。
 
 **重算注入的触发点**（全部经由框架桥接壳，模块自己不在事件上挂监听）：
 
@@ -286,7 +307,7 @@ c.setExtensionPrompt(
 | --- | --- |
 | `APP_READY` | 启动后第一次算 |
 | `CHAT_CHANGED` | 切会话，状态列表换了，注入内容必须跟着换 |
-| 面板勾选「启用」「发送前注入」 | 立即重算（另外三个开关不重算） |
+| 面板勾选「启用」「发送前注入」 | 立即重算（另外四个开关不重算；「纳入世界书扫描」靠扫描时的 getter 实时取值，也不用重算） |
 | 模板输入（防抖 400ms）/ 深度 change / 角色 change | 立即重算 |
 | 列表的批量添加 / 编辑保存 / 删除 / 清空 | 立即重算 |
 | 解析到标签之后 | 让下一次生成就带上新数值 |
@@ -305,13 +326,13 @@ c.setExtensionPrompt(
 | 列表项 | `.roleEx-state-row` / `.roleEx-state-name` / `.roleEx-state-value` / `.roleEx-state-edit` | 见下 |
 | 模板文本框 | `#roleEx-state-inject-prompt`（`.text_pole .roleEx-textarea`，rows=7） | 输入即时保存，防抖 400ms |
 | 深度 / 角色 | `.text_pole.roleEx-num`（number min 0 max 100 / select） | 改完立即 `applyStateInjection()` |
-| 五个开关 | `checkboxRow(input, label, hint)`，id 由框架随机生成 | 文案见模块 README 的开关表 |
+| 六个开关 | `checkboxRow(input, label, hint)`，id 由框架随机生成 | 文案见模块 README 的开关表；「纳入世界书扫描」的 hint 在 `supportsWiScanSource()` 为 false 时换成不可用说明 |
 
 几条与状态面板直接相关的约定：
 
 0. **正文只有一层**：平铺内容 + 同级折叠块。不允许再套 `.roleEx-block`，也不允许把 `section()` 嵌进
    `section()` —— 旧版正是一个 `.roleEx-block` 包着一个嵌套 section，**两个层级并存**；现在与推特模块同一套。
-   原来那两处 `.roleEx-block` 已拆掉：五个开关**平铺**（它们本来就没有标题，不额外造一个），
+   原来那两处 `.roleEx-block` 已拆掉：六个开关**平铺**（它们本来就没有标题，不额外造一个），
    「状态列表（随会话保存）」的标题改由折叠块 header 承担。自测里对四个模块的正文都钉了这条契约。
 1. **折叠箭头语义统一为酒馆原生的「收起 `down` ↓ / 展开 `up` ↑」**，初始 `display` 必须显式写死
    （`section()` 的 `setOpen()` 负责）。这两条是历史坑，改 `section()` 时别只改一半（主文档 §5 第 1、2 条）。

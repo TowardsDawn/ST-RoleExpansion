@@ -305,6 +305,12 @@ let renderCount = 0;
 const runtimeSources = new Map();
 /** identifier -> 注册时给的 options（补丁据此放开 marker 卡片的「铅笔 + 开关」授权） */
 const runtimeSourceOptions = new Map();
+/** 模拟 ST 侧的世界书扫描源注册表（补丁 st-wi-scan-source）：key -> getText */
+const wiScanSources = new Map();
+/** 每一次登记调用的 key（重复登记同一个 key 也留痕 —— 「恰好登记一次」靠它数） */
+const wiRegisterCalls = [];
+/** 补丁开关：false = 真酒馆没打 st-wi-scan-source，getContext() 上整对成员都得消失 */
+const wiPatch = { present: true };
 const promptManager = {
     configuration: { prefix: 'completion_', promptOrder: { strategy: 'global', dummyId: DUMMY_ID } },
     serviceSettings: fakeSettings,
@@ -353,7 +359,18 @@ globalThis.SillyTavern = {
         },
         setExtensionPrompt: (key, value, position, depth, scan, role) => {
             captured[key] = { value, position, depth, scan, role };
+            // 每次调用都留痕：第 5 参（scan）要看的是**两条调用路径**，captured 只留最后一次
+            extensionPromptCalls.push({ key, value, position, depth, scan, role });
         },
+        // 模拟 ST 打上 st-wi-scan-source 补丁后的 API；wiPatch.present=false 时整对成员消失，
+        // 框架于是走「补丁缺失」分支（真酒馆没打补丁就是这样 —— 是「成员不存在」，不是「调用报错」）。
+        ...(wiPatch.present ? {
+            registerWorldInfoScanSource: (key, getText) => {
+                wiRegisterCalls.push(String(key));
+                wiScanSources.set(String(key), getText);
+            },
+            unregisterWorldInfoScanSource: (key) => { wiScanSources.delete(String(key)); },
+        } : {}),
         substituteParams: (s) => String(s).replace(/\{\{char\}\}/g, '角色').replace(/\{\{user\}\}/g, '我'),
         generateQuietPrompt: async (params) => {
             quietCalls.push(params);
@@ -384,6 +401,8 @@ globalThis.SillyTavern = {
 
 const map = {};
 const captured = {};
+/** setExtensionPrompt 的**全部**调用记录（captured 只留最后一次，验不了「两条路径都是 scan=false」） */
+const extensionPromptCalls = [];
 /** 生成通道的调用记录（验证隔离 / 回退两条路径） */
 const rawCalls = [];
 const quietCalls = [];
@@ -1020,10 +1039,10 @@ for (const sectionId of ['roleEx-outfit-section', 'roleEx-twitter-section', 'rol
     check(sectionId + ' 正文里没有嵌套的 .roleEx-section（没有子面板层级）',
         kids.some(c => String(c.className).includes('roleEx-section')), false);
 }
-check('角色状态栏正文的直接子节点 = 5 个平铺开关 + 2 个同级折叠块',
+check('角色状态栏正文的直接子节点 = 6 个平铺开关 + 2 个同级折叠块',
     (registry.get('roleEx-state-section')?.children?.[1]?.children || []).map(nodeTag),
     ['roleEx-checkbox-row', 'roleEx-checkbox-row', 'roleEx-checkbox-row', 'roleEx-checkbox-row',
-        'roleEx-checkbox-row', 'roleEx-state-list-fold', 'roleEx-state-tpl-fold']);
+        'roleEx-checkbox-row', 'roleEx-checkbox-row', 'roleEx-state-list-fold', 'roleEx-state-tpl-fold']);
 
 // ---- 顶部抽屉：按钮必须绑上自己的点击（酒馆是直接绑定 .drawer-toggle，不会认后插入的抽屉） ----
 const clickListeners = Array.from(listeners.keys()).filter(k => k.endsWith(':click'));
@@ -3209,10 +3228,398 @@ check('已删除的 .roleEx-outfit-tags 规则不存在（行内输入框那套�
     /\.roleEx-outfit-tags\b/.test(ofCssSrc), false);
 
 // 补丁文件的换行统一成 LF：混进 CR 会让 `git apply` 在 LF 检出（Linux / macOS，或 core.autocrlf 未开）上直接失败
-check('补丁：三份 .patch 都是纯 LF（没有混进 CR）',
-    ['st-marker-prompt', 'st-journal-store', 'st-twitter-assets']
+check('补丁：四枚 .patch 文件都在（含新增的 st-wi-scan-source）',
+    ['st-marker-prompt', 'st-journal-store', 'st-twitter-assets', 'st-wi-scan-source']
+        .filter(name => !existsSync(fileURLToPath(new URL('../patches/' + name + '.patch', import.meta.url))))
+        .join(','), '');
+check('补丁：四份 .patch 都是纯 LF（没有混进 CR）',
+    ['st-marker-prompt', 'st-journal-store', 'st-twitter-assets', 'st-wi-scan-source']
         .filter(name => readFileSync(fileURLToPath(new URL('../patches/' + name + '.patch', import.meta.url)), 'utf8').includes('\r'))
         .join(','), '');
+
+// ============================================================================
+// 12. 世界书扫描源（需要 ST 侧 patches/st-wi-scan-source.patch）
+//
+// 同一段正文有两条去处：预设卡片的运行时正文源（组装期）与世界书扫描源（扫描期，
+// ST 的 checkWorldInfo() 在扫描开始时遍历 extensionScanSources 把正文塞进 haystack）。
+// 这一节验三件事，都落在既有规矩「补丁缺失可降级、但绝不静默」上：
+//   框架：补丁缺失 → registerWiScanSource 返回 false（不抛）+ 告警一次；supportsWiScanSource() 如实两态；
+//   状态栏：扫描正文与注入正文是**同一份** buildStateInjectionText()（三道闸一起生效），
+//          且注入那两条 setExtensionPrompt 的第 5 参仍是 false（同一份文本不进两次 haystack）；
+//   衣装：扫描正文 = 卡片正文（同一个 getContent），outfitWIScan 只包在外面 ——
+//          关掉它绝不能把卡片一起变空（这是本次改动最容易写反的一处）。
+// ============================================================================
+
+// ---- 12.1 框架桥接 ----
+const wiScanText = (id) => (wiScanSources.has(id) ? wiScanSources.get(id)() : null);
+
+// 补丁缺失：返回 false、不抛、且必须告警一次（文案里带补丁名与被拒 id）
+const wiWarns = [];
+const wiRealWarn = console.warn;
+console.warn = (...args) => { wiWarns.push(args.map(a => String(a)).join(' ')); };
+wiPatch.present = false;
+let wiMissingResult = null;
+let wiMissingThrew = '';
+try {
+    wiMissingResult = api.registerWiScanSource('roleExpansionProbe', () => '探针正文');
+} catch (e) {
+    wiMissingThrew = String((e && e.message) || e);
+}
+const wiSupportsOff = api.supportsWiScanSource();
+console.warn = wiRealWarn;
+wiPatch.present = true;
+
+check('扫描源：补丁缺失时 registerWiScanSource 返回 false（不抛）', wiMissingResult, false);
+check('扫描源：补丁缺失时没有把异常抛给调用方（都在模块初始化路径上）', wiMissingThrew, '');
+check('扫描源：补丁缺失时告警一次（不静默），文案点出补丁名与被拒 id',
+    wiWarns.filter(t => t.includes('st-wi-scan-source') && t.includes('roleExpansionProbe')).length, 1);
+check('扫描源：补丁缺失时那个源没有进 ST 的注册表', wiScanSources.has('roleExpansionProbe'), false);
+check('扫描源：supportsWiScanSource() 补丁缺失 → false', wiSupportsOff, false);
+check('扫描源：supportsWiScanSource() 补丁生效 → true', api.supportsWiScanSource(), true);
+
+const wiProbeGetter = () => '探针正文';
+check('扫描源：补丁生效时 registerWiScanSource 返回 true',
+    api.registerWiScanSource('roleExpansionProbe', wiProbeGetter), true);
+check('扫描源：ST 侧收到 (String(id), getText) —— key 是字符串、getter 是同一个函数',
+    [wiScanSources.has('roleExpansionProbe'), wiScanSources.get('roleExpansionProbe') === wiProbeGetter].join('|'),
+    'true|true');
+check('扫描源：非字符串 id 也被 String() 归一',
+    api.registerWiScanSource(12345, () => 'x'), true);
+check('扫描源：注册表里的键就是字符串 12345', wiScanSources.has('12345'), true);
+// 收尾：探针源摘掉，别让它掺进下面「恰好登记一次」的计数
+wiScanSources.delete('roleExpansionProbe');
+wiScanSources.delete('12345');
+
+// ---- 12.2 状态栏：扫描源与注入源同源（同一个 buildStateInjectionText）----
+check('状态栏：stateWIScan 默认关', api.settings.stateWIScan, false);
+check('状态栏：扫描源恰好登记一次', wiRegisterCalls.filter(k => k === 'roleExpansionState').length, 1);
+check('状态栏：扫描源 id 是 roleExpansionState', wiScanSources.has('roleExpansionState'), true);
+
+// 现场备份：这一节要动总开关 / 注入开关 / 列表，跑完原样还回去
+const wiStateGates = { enabled: api.settings.stateEnabled, autoInject: api.settings.stateAutoInject };
+const wiStateListBackup = api.getStateList().map(x => ({ name: x.name, value: x.value }));
+api.settings.stateEnabled = true;
+api.settings.stateAutoInject = true;
+api.getStateList().length = 0;
+api.getStateList().push({ name: '生命值', value: '7/10' });
+/** 注入侧此刻的正文（顺带动一次 setExtensionPrompt，两条路径都由它留痕） */
+const wiStateInjected = () => { api.applyStateInjection(); return captured.RoleExpansion_State?.value ?? ''; };
+
+api.settings.stateWIScan = false;
+check('状态栏：开关关 → 扫描 getter 返回空串', wiScanText('roleExpansionState'), '');
+const wiStateInjectedOn = wiStateInjected();
+api.settings.stateWIScan = true;
+check('状态栏：开关开 → 扫描正文 === 注入正文（同一份）',
+    wiScanText('roleExpansionState'), wiStateInjectedOn);
+check('状态栏：这份正文确实非空（否则上面三条都恒真）', wiStateInjectedOn.length > 0, true);
+check('状态栏：扫描正文里就是状态列表（生命值 7/10）',
+    String(wiScanText('roleExpansionState')).includes('生命值 7/10'), true);
+
+// 三道闸（总开关 / 注入开关 / 列表非空）：关掉哪一道，注入与扫描都必须**同时**变空
+api.settings.stateEnabled = false;
+check('状态栏：stateEnabled=false → 注入与扫描同时变空',
+    [wiStateInjected(), wiScanText('roleExpansionState')].join('|'), '|');
+api.settings.stateEnabled = true;
+api.settings.stateAutoInject = false;
+check('状态栏：stateAutoInject=false → 注入与扫描同时变空',
+    [wiStateInjected(), wiScanText('roleExpansionState')].join('|'), '|');
+api.settings.stateAutoInject = true;
+api.getStateList().length = 0;
+check('状态栏：状态列表为空 → 注入与扫描同时变空',
+    [wiStateInjected(), wiScanText('roleExpansionState')].join('|'), '|');
+
+// 注入那两条 setExtensionPrompt 的第 5 参（scan）都必须是 false ——
+// 扫描源喂的是同一份文本，这里再标 scan 只会让它在 haystack 里出现两次
+const wiStateCalls = () => extensionPromptCalls.filter(c => c.key === 'RoleExpansion_State');
+api.getStateList().push({ name: '生命值', value: '7/10' });
+api.applyStateInjection();                       // 有正文 → 注入那条
+const wiStateCallWithText = wiStateCalls().slice(-1)[0];
+api.getStateList().length = 0;
+api.applyStateInjection();                       // 空文本 → 清空那条
+const wiStateCallEmpty = wiStateCalls().slice(-1)[0];
+check('状态栏：有正文那条 setExtensionPrompt 的第 5 参 scan=false', wiStateCallWithText?.scan, false);
+check('状态栏：清空那条 setExtensionPrompt 的第 5 参 scan=false', wiStateCallEmpty?.scan, false);
+check('状态栏：两条是各自独立的调用（有正文 / 清空各一次）',
+    [wiStateCallWithText !== wiStateCallEmpty, String(wiStateCallWithText?.value || '').length > 0].join('|'),
+    'true|true');
+
+// 收尾：把现场还回去
+api.getStateList().length = 0;
+api.getStateList().push(...wiStateListBackup);
+api.settings.stateEnabled = wiStateGates.enabled;
+api.settings.stateAutoInject = wiStateGates.autoInject;
+api.settings.stateWIScan = false;
+api.applyStateInjection();
+
+// ---- 12.3 状态栏 UI：正文里多出来的第 6 个平铺开关 ----
+const wiStateRows = (registry.get('roleEx-state-section')?.children?.[1]?.children || [])
+    .filter(c => String(c.className).includes('roleEx-checkbox-row'));
+// 第 3 行就是新开关（开关顺序：启用 → 发送前注入 → 纳入世界书扫描 → …）
+check('状态栏：正文里 6 个平铺开关，第 3 个是「纳入世界书扫描」',
+    [wiStateRows.length, wiStateRows[2]?.children?.[1]?.children?.[0]?.textContent].join('|'),
+    '6|纳入世界书扫描');
+check('状态栏（补丁生效）：该复选框可用（checked 跟随 stateWIScan=false）',
+    [!!wiStateRows[2]?.children?.[0]?.disabled, wiStateRows[2]?.children?.[0]?.checked], [false, false]);
+
+// 「补丁缺失 → 复选框禁用 + hint 明说」这条只能在**构建面板的那一刻**验
+// （supportsWiScanSource() 是构建期读一次），而主面板早在 import 时就按「补丁生效」建好了。
+// 所以这里按框架同名契约造一份最小 DOM 构建器，用桩 kernel 直接驱动模块自己的
+// buildStatePanel() / buildOutfitPanel()，重建一份面板来看（与第 10 节 import 工厂同款做法）。
+const wiHandlers = new Map();
+const wiEl = (tag, attrs = {}, children = []) => {
+    const node = makeEl(tag);
+    // ⚠️ 桩面板的 id 不进全局 registry：makeEl.setAttribute 会按 id 注册，
+    //    否则会顶掉主面板里同 id 的节点（后面的断言就取到桩节点了）。
+    node.setAttribute = (k, v) => { node[k] = v; };
+    const rawAdd = node.addEventListener.bind(node);
+    node.addEventListener = (type, fn) => {
+        wiHandlers.set(node, Object.assign(wiHandlers.get(node) || {}, { [type]: fn }));
+        rawAdd(type, fn);
+    };
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'class') { node.className = v; }
+        else if (k === 'text') { node.textContent = v; }
+        else if (k === 'html') { node.innerHTML = v; }
+        else if (k.startsWith('on') && typeof v === 'function') { node.addEventListener(k.slice(2).toLowerCase(), v); }
+        else if (v !== null && v !== undefined && v !== false) { node.setAttribute(k, v === true ? '' : String(v)); }
+    }
+    for (const child of [].concat(children)) {
+        if (child === null || child === undefined) { continue; }
+        node.appendChild(child);
+    }
+    return node;
+};
+const wiFire = (node, type) => wiHandlers.get(node)?.[type]?.({ preventDefault() { }, stopPropagation() { } });
+const wiSection = (title, { open = false } = {}) => {
+    const content = wiEl('div', { class: 'roleEx-section-body' });
+    const header = wiEl('div', { class: 'roleEx-section-header' }, [
+        wiEl('i', { class: 'fa-solid fa-fw roleEx-section-icon' }),
+        wiEl('span', { class: 'roleEx-section-title', text: title }),
+        wiEl('div', { class: 'fa-solid fa-circle-chevron-down inline-drawer-icon roleEx-chevron' }),
+    ]);
+    const root = wiEl('div', { class: 'roleEx-section' }, [header, content]);
+    content.style.display = open ? 'block' : 'none';
+    return { root, content };
+};
+const wiIconFor = (root, cls) => {
+    const icon = allNodes(root, n => String(n.className).includes('roleEx-section-icon'))[0];
+    if (icon) { icon.className = `fa-solid fa-fw ${cls} roleEx-section-icon`; }
+};
+const wiCollapsible = (title, { open = true } = {}) => {
+    const dir = open ? 'up' : 'down';
+    const body = wiEl('div', { class: 'inline-drawer-content roleEx-fold-body' });
+    const header = wiEl('div', { class: 'inline-drawer-toggle inline-drawer-header roleEx-fold-header' }, [
+        wiEl('span', { text: title }),
+        wiEl('div', { class: `fa-solid fa-circle-chevron-${dir} ${dir} inline-drawer-icon` }),
+    ]);
+    const root = wiEl('div', { class: 'inline-drawer roleEx-fold' }, [header, body]);
+    body.style.display = open ? 'block' : 'none';
+    return { root, body, header };
+};
+const wiCheckboxRow = (input, label, hint) => wiEl('label', { class: 'roleEx-checkbox-row' }, [
+    input,
+    wiEl('div', { class: 'roleEx-checkbox-text' }, [
+        wiEl('span', { class: 'roleEx-checkbox-label', text: label }),
+        hint ? wiEl('span', { class: 'roleEx-hint', text: hint }) : null,
+    ]),
+]);
+/** 桩 kernel：DOM 构建器 + 可辨认的 updateSetting 记录 + 可切换的 supportsWiScanSource() */
+const wiStubKernel = (updates, settingsObj, wiSupported) => ({
+    el: wiEl, section: wiSection, iconFor: wiIconFor, collapsible: wiCollapsible, checkboxRow: wiCheckboxRow,
+    debounce: (fn) => fn,
+    splitLines: (t) => String(t ?? '').split(/\r?\n/),
+    toast: () => { },
+    ui: {},
+    updateSetting: (key, value) => { updates.push([key, value]); },
+    settings: settingsObj,
+    supportsWiScanSource: () => wiSupported,
+});
+/** 桩面板里第 index 个开关行（0 基）的复选框 / 文案 / hint */
+const wiRow = (section, index) => {
+    const rows = (section?.content?.children || []).filter(c => String(c.className).includes('roleEx-checkbox-row'));
+    const row = rows[index] || null;
+    return {
+        count: rows.length,
+        input: row?.children?.[0] || null,
+        label: row?.children?.[1]?.children?.[0]?.textContent,
+        hint: row?.children?.[1]?.children?.[1]?.textContent,
+    };
+};
+const WI_PATCH_HINT = 'ST 补丁 st-wi-scan-source 未生效，此项不可用';
+
+const wiStateUiFactory = (await import(new URL('../modules/state/ui.js', import.meta.url).href)).createStateUi;
+const wiStateStubPanel = (wiSupported, stateWIScan) => {
+    const updates = [];
+    const settingsObj = {
+        stateEnabled: true, stateAutoInject: true, stateWIScan,
+        stateStripTags: true, stateIncludeInJournal: true, stateOnlyKnownNames: true,
+        stateInjectPrompt: '{{stateList}}', stateInjectDepth: 0, stateInjectRole: 'system',
+    };
+    const rt = {
+        store: { getStateList: () => [{ name: '生命值', value: '7/10' }], saveMeta: () => { } },
+        inject: { applyStateInjection: () => { }, buildStateText: () => '生命值 7/10' },
+    };
+    return { updates, section: wiStateUiFactory(wiStubKernel(updates, settingsObj, wiSupported), rt).buildStatePanel() };
+};
+
+const wiStateOn = wiStateStubPanel(true, false);
+const wiStateOnRow = wiRow(wiStateOn.section, 2);
+check('状态栏（桩面板）：第 3 行是「纳入世界书扫描」', wiStateOnRow.label, '纳入世界书扫描');
+check('状态栏（桩面板，补丁生效）：复选框不禁用、checked 跟随 stateWIScan=false',
+    [!!wiStateOnRow.input?.disabled, wiStateOnRow.input?.checked], [false, false]);
+wiStateOnRow.input.checked = true;
+wiFire(wiStateOnRow.input, 'change');
+check('状态栏：勾选 → updateSetting(\'stateWIScan\', true)',
+    JSON.stringify(wiStateOn.updates[0]), JSON.stringify(['stateWIScan', true]));
+
+const wiStateOff = wiStateStubPanel(false, true);
+const wiStateOffRow = wiRow(wiStateOff.section, 2);
+check('状态栏（桩面板，补丁缺失）：该复选框 disabled=true', wiStateOffRow.input?.disabled, true);
+check('状态栏（桩面板，补丁缺失）：hint 明说不可用（不静默禁用）', wiStateOffRow.hint, WI_PATCH_HINT);
+check('状态栏（桩面板，补丁缺失）：checked 仍跟随 stateWIScan=true', wiStateOffRow.input?.checked, true);
+
+// ---- 12.4 衣装：扫描正文 = 卡片正文 ----
+check('衣装：outfitWIScan 默认关', api.settings.outfitWIScan, false);
+check('衣装：扫描源恰好登记一次', wiRegisterCalls.filter(k => k === 'roleExpansionOutfit').length, 1);
+check('衣装：扫描源 id 是 roleExpansionOutfit', wiScanSources.has('roleExpansionOutfit'), true);
+
+const wiDummyOrder = promptManager.getPromptOrderForCharacter({ id: DUMMY_ID });
+let wiOutfitEntry = wiDummyOrder.find(e => e.identifier === 'roleExpansionOutfit');
+if (!wiOutfitEntry) {
+    wiOutfitEntry = { identifier: 'roleExpansionOutfit', enabled: true };
+    wiDummyOrder.push(wiOutfitEntry);
+}
+wiOutfitEntry.enabled = true;
+// 现场：第 9 节最后一条用例把资源端点关掉了（缺补丁），那次读盘失败把页面级原因缓存进了
+// rt.state.reason —— 它会让之后的读盘被直接跳过、写盘一律回滚。本节要做「有正文」的正向对照，
+// 还要能把已选项取消掉，所以先把端点放回去，借「面板打开」那次机会触发一次重探
+// （与第 10 节同一套：临时把时钟推过 3 秒节流窗口，探针回来才是真状态）。
+const wiEndpointBackup = journalEndpointAvailable;
+journalEndpointAvailable = true;
+const wiRealNow = Date.now;
+Date.now = () => wiRealNow() + 60000;
+api.renderOutfit();
+Date.now = wiRealNow;
+await api.reloadOutfit();
+check('衣装：端点恢复后重探一次 → 状态行不再打红字（页面级原因已清）',
+    ofHasClass(ofStatusEl, 'roleEx-warn'), false);
+const wiOutfitCardBody = () => runtimeSources.get('roleExpansionOutfit')();
+const wiOutfitScanBody = () => wiScanText('roleExpansionOutfit');
+// 兜底：万一盘上的选择是空的，用面板自己选一个（写盘此刻已经能成功）
+if (!wiOutfitCardBody().length) {
+    ofOpenCatModal('shoes');
+    ofModalEl('roleEx-outfit-modal-tags').value = '短靴';
+    ofModalEl('roleEx-outfit-modal-save')?.click();
+    await ofTick();
+    ofOpenCatModal('shoes');
+    ofModalEl('roleEx-outfit-modal-chips')?.children?.[0]?.click();
+    await ofTick();
+    ofModalEl('roleEx-outfit-modal-cancel')?.click();
+}
+api.settings.outfitWIScan = false;
+
+// ★ 反回归：outfitWIScan 只包在 getContent **外面** —— 关掉扫描绝不能把卡片一起变空
+api.settings.outfitWIScan = false;
+const wiCardBodyOff = wiOutfitCardBody();
+check('衣装：★反回归 —— 关扫描时卡片正文照常非空', wiCardBodyOff.length > 0, true);
+check('衣装：★反回归 —— 关扫描时只有扫描正文是空串', wiOutfitScanBody(), '');
+api.settings.outfitWIScan = true;
+check('衣装：开扫描 → 扫描正文 === 卡片正文（同一个 getContent）', wiOutfitScanBody(), wiCardBodyOff);
+check('衣装：两侧此刻都非空（否则上面一条恒真）',
+    [wiOutfitCardBody().length > 0, wiOutfitScanBody().length > 0].join('|'), 'true|true');
+
+// 三道闸在扫描侧原样继承：卡片不在 order / 卡片关掉 / 一个衣装项都没选
+wiDummyOrder.splice(wiDummyOrder.indexOf(wiOutfitEntry), 1);
+check('衣装：闸① 卡片不在任何 prompt_order 块 → 卡片正文与扫描正文同时为空',
+    [wiOutfitCardBody(), wiOutfitScanBody()].join('|'), '|');
+wiDummyOrder.push({ identifier: 'roleExpansionOutfit', enabled: false });
+check('衣装：闸② 卡片 enabled=false → 卡片正文与扫描正文同时为空',
+    [wiOutfitCardBody(), wiOutfitScanBody()].join('|'), '|');
+wiDummyOrder.find(e => e.identifier === 'roleExpansionOutfit').enabled = true;
+// 闸③：把已经选上的衣装项逐个取消（散装 tag 走分类弹窗的芯片、套装走一级弹窗的芯片，
+// 与用户点的是同一条路）。⚠️ 芯片的 is-on 在 className 字符串上，stub 的 classList 是另一份
+// 状态 —— 必须用 ofHasClass，不能写 classList.contains（那样永远点不动）。
+for (const [key, tags] of Object.entries(ofLine('outfit-selection')?.picked || {})) {
+    if (!tags.length || !registry.get('roleEx-outfit-edit-' + key)) {
+        continue;
+    }
+    ofOpenCatModal(key);
+    for (const chip of (ofModalEl('roleEx-outfit-modal-chips')?.children || []).slice()) {
+        if (ofHasClass(chip, 'is-on')) {
+            chip.click();
+            await ofTick();
+        }
+    }
+    ofModalEl('roleEx-outfit-modal-cancel')?.click();
+}
+for (const part of ['outer', 'inner']) {
+    const pickedId = ofSuitPicked()[part];
+    if (!pickedId) {
+        continue;
+    }
+    const suitName = (ofSuitsOf(part).find(s => s.id === pickedId) || {}).name;
+    ofSuitRowBtn(part)?.click();
+    const suitChip = ofSuitRowByName(part, suitName)?.children?.[2];
+    if (ofHasClass(suitChip, 'is-on')) {
+        suitChip.click();
+        await ofTick();
+    }
+    ofModalEl('roleEx-outfit-suit-cancel')?.click();
+}
+check('衣装：闸③ 没选任何衣装 → 卡片正文与扫描正文同时为空',
+    [wiOutfitCardBody(), wiOutfitScanBody()].join('|'), '|');
+api.settings.outfitWIScan = false;
+journalEndpointAvailable = wiEndpointBackup;
+
+// ---- 12.5 衣装 UI：稳定 id 在**行**上，输入框 id 由框架现生成 ----
+// ⚠️ 行的 id 是直接赋值（`wiScanRow.id = …`），不走 setAttribute，所以不能查 registry；
+//    按整棵树找 id（与第 9 节 ofDocCount 同款，顺带证明全页只有这一份）。
+check('衣装：新开关行在全页只有一份（id = roleEx-outfit-wi-scan-row）',
+    ofDocCount(n => String(n?.id) === 'roleEx-outfit-wi-scan-row'), 1);
+const wiOutfitRowEl = ofPanelRoots
+    .map(root => allNodes(root, n => String(n?.id) === 'roleEx-outfit-wi-scan-row')[0])
+    .find(Boolean) || null;
+check('衣装：新开关行的 DOM id 是 roleEx-outfit-wi-scan-row',
+    String(wiOutfitRowEl?.id), 'roleEx-outfit-wi-scan-row');
+check('衣装：新开关行的文案是「纳入世界书扫描」',
+    wiOutfitRowEl?.children?.[1]?.children?.[0]?.textContent, '纳入世界书扫描');
+check('衣装：输入框 id 由框架现生成（没有硬编码成行 id）',
+    [String(wiOutfitRowEl?.children?.[0]?.id || '').length > 0,
+        String(wiOutfitRowEl?.children?.[0]?.id) !== 'roleEx-outfit-wi-scan-row'].join('|'), 'true|true');
+check('衣装（补丁生效）：该行复选框可用', !!wiOutfitRowEl?.children?.[0]?.disabled, false);
+
+const wiOutfitStubPanel = (wiSupported, outfitWIScan) => {
+    const updates = [];
+    const settingsObj = { outfitInjectPrompt: '【衣装】\n{{outfitList}}', outfitWIScan };
+    const calls = { count: 0 };
+    const rt = {
+        state: { loaded: true, autoLoadTried: true },
+        inject: {
+            PRESET_PROMPT: { ID: 'roleExpansionOutfit', NAME: '衣装（角色扩展）', SOURCE_NAME: '角色扩展（衣装）' },
+            currentPresetName: () => '', diagnoseOutfitCard: () => ({ detail: '' }),
+            isPromptManagerExposed: () => true, probeCardControls: () => ({}),
+            probeStPatch: () => ({}), readOutfitCard: () => ({}), supportsMarkerPromptCard: () => true,
+        },
+    };
+    rt.store = ofStoreFactory(ofStubKernel(async () => ({ ok: true }), calls), rt);
+    return { updates, panel: ofUiFactory(wiStubKernel(updates, settingsObj, wiSupported), rt).buildOutfitPanel() };
+};
+
+const wiOutfitOn = wiOutfitStubPanel(true, false);
+check('衣装（桩面板，补丁生效）：复选框不禁用、checked 跟随 outfitWIScan=false',
+    [!!wiOutfitOn.panel.wiScanToggle?.disabled, wiOutfitOn.panel.wiScanToggle?.checked], [false, false]);
+wiOutfitOn.panel.wiScanToggle.checked = true;
+wiFire(wiOutfitOn.panel.wiScanToggle, 'change');
+check('衣装：勾选 → updateSetting(\'outfitWIScan\', true)',
+    JSON.stringify(wiOutfitOn.updates[0]), JSON.stringify(['outfitWIScan', true]));
+
+const wiOutfitOff = wiOutfitStubPanel(false, true);
+check('衣装（桩面板，补丁缺失）：该行输入框 disabled=true',
+    wiOutfitOff.panel.wiScanToggle?.disabled, true);
+check('衣装（桩面板，补丁缺失）：hint 明说不可用（不静默禁用）',
+    wiOutfitOff.panel.wiScanRow?.children?.[1]?.children?.[1]?.textContent, WI_PATCH_HINT);
+check('衣装（桩面板，补丁缺失）：checked 仍跟随 outfitWIScan=true',
+    wiOutfitOff.panel.wiScanToggle?.checked, true);
 
 console.log(failed ? `\n${failed} / ${total} 项失败` : `\n全部通过（共 ${total} 项断言）`);
 process.exit(failed ? 1 : 0);

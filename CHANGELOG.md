@@ -5,6 +5,51 @@
 
 > `0.2.x` 及更早为本地迭代，条目依据 README 与代码整理，细节未必完整。
 
+## [0.12.0] - 2026-10-16
+
+### 新增
+
+- **状态栏与衣装的正文可以喂给世界书扫描**（两个模块各一个「纳入世界书扫描」开关，**默认关**）。
+  打开后同一份正文除了照常进提示词，还作为世界书扫描的目标文本 —— 写在状态名 / 衣装 tag 上的关键词
+  就能触发对应的世界书条目。
+  - **状态栏**（`stateWIScan`）：扫描文本与注入文本**同源**（`buildStateInjectionText()` 是唯一出口），
+    `stateEnabled` / `stateAutoInject` / 列表非空这三道闸同时管住两条通道；注入那两条 `setExtensionPrompt()`
+    的第 5 参**保持 `false`** —— 扫描源喂的是同一份文本，再标一次 scan 会让同一段正文在 haystack 里出现两次。
+  - **衣装**（`outfitWIScan`）：卡片正文与扫描正文共用**同一个 `getContent`**（三道闸原样继承），
+    开关只包在**外面**一层 —— 关掉世界书扫描不会顺带把预设卡片变成没有正文。
+  - ⚠️ 被扫的正文**不受 scan depth 截断、在所有扫描轮次（含递归轮）都可见**，所以状态名 / 衣装 tag 里
+    任何一个词都可能触发世界书条目 —— 这正是两个开关默认关的理由。
+- **第四枚 ST 补丁 `patches/st-wi-scan-source.patch`**（净新增 44 行 / 删 1 行）：世界书扫描只认
+  `extensionPrompts` 里 `scan === true` 的条目，而扩展注册的运行时正文源不在那张表里，于是另开一条通道 ——
+  `world-info.js` 加一张 `extensionScanSources` 注册表与 `registerWorldInfoScanSource()` /
+  `unregisterWorldInfoScanSource()`，`checkWorldInfo()` 里在原有 `extensionPrompts` 循环**之后**把每个源的正文
+  `buffer.addInject()`；`st-context.js` 把这两个函数挂到 `getContext()`。
+  - **只碰前端** `public/scripts/`：与其余三枚补丁**顺序无关**（放最前或最后都行），**不用重启酒馆主进程**，`Ctrl+F5` 即可。
+  - 源取正文时抛错只记一条 `console.error`，**绝不中断世界书扫描**；正文为空则整条跳过。
+- **框架封装**：`kernel.registerWiScanSource(id, getText)` 与 `kernel.supportsWiScanSource()`
+  （补丁缺失 → `console.warn` 后返回 `false`，**不抛** —— 调用方都在模块初始化路径上，抛出去会连累整个模块起不来）。
+  两者同时挂进 `globalThis.roleExpansion`：排查「世界书扫不到我的文本」时先看 `roleExpansion.supportsWiScanSource()`。
+
+### 变更
+
+- **补丁从三枚变四枚**：README / DEVELOPMENT 的补丁表、结构树、`git apply` 清单全部补齐，并写清
+  「其余三枚内部 `st-journal-store` 必须先于 `st-twitter-assets`，本枚与它们无关」。前三枚的净新增行数
+  仍是 151 / 131 / 182（未改动）。
+- **版本复验面**：四枚补丁现在都在 **1.18.0（`51ad27fb8`）与 1.19.0（`7e8663cd9`）** 两个纯净检出上验过 ——
+  1.19.0 零偏移，1.18.0 上新补丁带 -2 / -112 行偏移，应用后插入位置两版本都正确。
+- **文档准确性**：`modules/twitter/DEVELOPMENT.md` 里「`sub` 的服务端白名单目前只有 `'twitter'`」是 0.10.0
+  起就过期的表述，改成 `['twitter', 'outfit']`。
+- 缺补丁时状态栏与衣装的勾选框**禁用并在 hint 里写明缺哪一枚**（不静默），其余功能完全不受影响。
+
+### 自测
+
+- `npm test`：**718 → 771 项断言**（补丁清单 +1，新第 12 节 +52，覆盖框架 / 状态栏 / 衣装三组）。
+  其中一条**反回归**断言专门盯「把 `outfitWIScan` 读进 `getContent` 本体」这个最容易写错的点：
+  故意破坏它时该断言立刻变红。
+- `npm run test:patch` 新增 `tools/patch-wiscan-test.mjs`（**26 / 42 / 92 项**）：补丁纯 LF、可独立应用、
+  与其余三枚两种顺序都成功，并在上述两个 ST 版本上各跑一遍。
+- 版本号 0.11.0 → 0.12.0（`manifest.json` / `package.json` / README badge / 本文件）。
+
 ## [0.11.0] - 2026-10-12
 
 ### 新增

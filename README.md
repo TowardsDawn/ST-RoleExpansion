@@ -2,7 +2,7 @@
 
 **一套持续完善的模块化、可扩展的ST扩展插件**
 
-![version](https://img.shields.io/badge/version-0.11.0-blue)
+![version](https://img.shields.io/badge/version-0.12.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)
@@ -26,21 +26,26 @@
 日记与衣装注入走的是酒馆原生的**有序提示词**机制（只有这两个模块用这条通道；状态栏走 `setExtensionPrompt()`，推特模块不注入任何提示词） —— 预设里放一张 `marker: true` 卡片，
 它的位置、名字、启停全都在酒馆预设 UI 里管；扩展只**读**它，负责在每次生成时喂正文。
 
+另外，状态栏与衣装各自有一个**「纳入世界书扫描」**开关（默认关，需要 `st-wi-scan-source.patch`）：
+打开后同一份正文除了进提示词，还作为世界书扫描的目标文本 —— 写在状态名 / 衣装 tag 上的关键词
+就能触发对应的世界书条目。它**不占提示词位置、也不经过注入通道**，只在扫描那一刻取正文。
+
 - 不创建、不修改、不移动预设卡片
 - 不调用 `/api/presets/save`，不碰你的预设文件
 - 你在预设 UI 里拖位置、改名字、开关它 —— 扩展全程配合，绝不还原
 
 ### ⚠️ 一个前提：需要给 ST 打一次补丁
 
-原版酒馆有三件事第三方扩展做不到，本扩展因此附带**三份极小的补丁**（都只做新增与放行判断，不改动原生行为）：
+原版酒馆有四件事第三方扩展做不到，本扩展因此附带**四份极小的补丁**（都只做新增与放行判断，不改动原生行为）：
 
 | 补丁 | 解决什么 | 不打会怎样 |
 | --- | --- | --- |
 | `patches/st-marker-prompt.patch`（净新增约 151 行） | 运行时提示词源是硬编码的，第三方 marker 卡片没有编辑铅笔、没有启停开关 | 卡片上没开关和铅笔，日记与衣装注入不生效 |
 | `patches/st-journal-store.patch`（净新增约 131 行） | 没有接口能让前端写进 `chats/<角色>/`，日记没地方按角色存放 | 日记整块不可用（面板红字提示缺补丁） |
 | `patches/st-twitter-assets.patch`（净新增约 182 行） | 模块需要往自己的子目录里放文件（推特的 jsonl + 头像 + 横幅 + 本地配图、**衣装的 jsonl**）；端点的子目录白名单必须是 `['twitter', 'outfit']` | 推特整块不可用（面板红字提示缺补丁）；衣装也读写不了 |
+| `patches/st-wi-scan-source.patch`（净新增 44 行 / 删 1 行） | 世界书扫描只认 `extensionPrompts` 里 `scan=true` 的条目，而扩展注册的运行时正文源不在那张表里 | 状态栏与衣装面板里的「纳入世界书扫描」勾选框变灰不可用（面板会写明缺哪一枚，不静默） |
 
-**装好扩展 ≠ 装好了**，三份补丁都需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
+**装好扩展 ≠ 装好了**，四份补丁都需要你自己 `git apply` 一次（见[打补丁（必须）](#打补丁必须)）。
 
 ---
 
@@ -72,7 +77,7 @@
 - 模块全拿掉时：面板显示「没有可用模块」并列出两种可能（目录被删 / 被禁用），副标题变「（无模块）」，
   「扩展」设置面板里只剩框架自己的东西 —— 不会出现「空白面板 + 永远检测中」的假故障
 - 「存为默认设置」/「恢复默认设置」统一管**所有模块的设置项**（快照存进酒馆的扩展设置，重启仍在）
-- 配套离线自测（最小 DOM / ST 桩，**718 项断言**）+ 两份补丁端点的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
+- 配套离线自测（最小 DOM / ST 桩，**771 项断言**）+ 三份补丁自测的 e2e，CI 对 Node 18 / 20 / 22 各跑一遍
 
 **模块**（各自成文）（按主面板里的区块顺序排列 = `modules/manifest.json` 的 `modules[]` 顺序）
 
@@ -89,7 +94,7 @@
 
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
-| SillyTavern | **≥ 1.18.0** | 开发与验证版本。三份补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线（**1.19.0 已复验**：三份补丁都能 `git apply` 干净落地，只带 9 行 / 1 行偏移，结果文件与 1.18.0 一致），换版本前先 `git apply --check` |
+| SillyTavern | **≥ 1.18.0** | 开发与验证版本。前三枚补丁的上下文行号以 1.18.0 的 `openai.js` / `PromptManager.js` / `st-context.js` / `server-startup.js` 为基线（**四枚补丁在 1.18.0（`51ad27fb8`）与 1.19.0（`7e8663cd9`）的纯净检出上都复验过**：`git apply` 干净落地（1.19.0 上零偏移、结果文件与 1.18.0 一致；1.18.0 上新补丁带 -2 / -112 行偏移，它与其余三枚顺序无关、放最前或最后都行）），换版本前先 `git apply --check` |
 | ST 接口 | Chat Completion 类 | 卡片与提示词管理器依赖 Chat Completion；文本补全类接口下面板会提示「尚未就绪」 |
 | ST 补丁 | **必须应用一次** | 见下方第 2 步 |
 | Node.js | ≥ 18（**仅自测需要**） | 扩展本身在浏览器里跑，装插件不需要 Node |
@@ -126,7 +131,12 @@ git clone https://github.com/TowardsDawn/ST-RoleExpansion.git ST-RoleExpansion
 git apply /path/to/ST-RoleExpansion/patches/st-marker-prompt.patch
 git apply /path/to/ST-RoleExpansion/patches/st-journal-store.patch
 git apply /path/to/ST-RoleExpansion/patches/st-twitter-assets.patch
+git apply /path/to/ST-RoleExpansion/patches/st-wi-scan-source.patch
 ```
+
+> ⚠️ **前三枚有先后**：`st-twitter-assets.patch` 锚定 `st-journal-store.patch` 往 `server-startup.js` 里加的那行 import，
+> 两者**不能反**。第四枚 `st-wi-scan-source.patch` 只碰 `public/scripts/`，与它们互不干扰 —— 放最前或最后都行，
+> 而且**它不用重启酒馆主进程**，`Ctrl+F5` 即可（另外两枚改了服务端，打完要重启）。
 
 第一个补丁做了五件事（细节见[核心机制](#核心机制)）：
 
@@ -146,6 +156,12 @@ git apply /path/to/ST-RoleExpansion/patches/st-twitter-assets.patch
 （模块私有资源读写：文本 + base64 图片，带子目录 / 扩展名白名单、路径穿越双保险与体积上限），
 并在 `src/server-startup.js` 再挂一行。它的子目录白名单是 **`['twitter', 'outfit']`** ——
 推特与衣装两个模块共用这一份端点，各写自己的子目录。
+
+第四份补丁（`st-wi-scan-source.patch`）同样只做新增，而且**只碰前端**：在 `world-info.js` 里加一张
+`extensionScanSources` 注册表（`registerWorldInfoScanSource(key, getText)` / `unregisterWorldInfoScanSource(key)`），
+`checkWorldInfo()` 扫描时把每个源的正文并进世界书扫描的 haystack；`st-context.js` 把这两个函数挂到 `getContext()`。
+它解决的是「扩展注入的正文扫不到」—— 状态栏与衣装的「纳入世界书扫描」开关靠它，缺它时那两个勾选框是灰的。
+**它不经过任何注入通道**，所以打开扫描不会让同一段正文在提示词里出现两次。
 
 > ⚠️ **从旧版升级上来的人（0.9.0 及更早）**：白名单那一行是从 `['twitter']` 改成 `['twitter', 'outfit']` 的
 > **同行替换、不增删行**，所以补丁文件本身能 `git apply --check` 干净通过，但
@@ -404,8 +420,8 @@ roleExpansion.adoptOutfitCardStateFromPreset()  roleExpansion.updateOutfitPreset
 ### 自测脚本
 
 ```bash
-npm test            # = node tools/smoke-test.mjs —— 718 项断言，纯 Node，不需要浏览器/酒馆
-npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点在 express 沙盒里真跑（26 + 36 项）
+npm test            # = node tools/smoke-test.mjs —— 771 项断言，纯 Node，不需要浏览器/酒馆
+npm run test:patch  # 三份补丁自测的 e2e：从 patches/*.patch 抽端点在 express 沙盒里真跑（26 + 42 + 92 项）
 ```
 
 没有依赖，`node` 直接跑即可；`smoke-test.mjs` 会读取仓库自带的 `examples/preset.example.json`
@@ -473,7 +489,7 @@ npm run test:patch  # 两份补丁端点的 e2e：从 patches/*.patch 抽端点�
 <details>
 <summary><b>ST 升级后一切失效</b></summary>
 
-升级/重装会覆盖 `public/scripts/*.js`（以及可能被覆盖的 `src/`），三份补丁都需要重新 `git apply`，
+升级/重装会覆盖 `public/scripts/*.js`（以及可能被覆盖的 `src/`），四份补丁都需要重新 `git apply`，
 然后 `Ctrl+F5`（改了服务端那份还要重启酒馆）。
 
 </details>
@@ -530,14 +546,16 @@ ST-RoleExpansion/
 │       └── index / store / stats / capture / render / ui .js
 ├── index.html                        酒馆「扩展」列表里的设置卡片模板（框架部分；模块自己往里挂区块）
 ├── style.css                         全部样式（统一 roleEx- 前缀）
-├── patches/                          对 ST 核心的三份最小补丁（见「打补丁」）
+├── patches/                          对 ST 核心的四份最小补丁（见「打补丁」）
 │   ├── st-marker-prompt.patch        运行时提示词源 + marker 卡片权限
 │   ├── st-journal-store.patch        日记文件读写端点
-│   └── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点（子目录白名单 twitter / outfit）
+│   ├── st-twitter-assets.patch       模块私有资源（文本 + 图片）读写端点（子目录白名单 twitter / outfit）
+│   └── st-wi-scan-source.patch       世界书扫描源注册表（模块正文可被世界书扫到）
 ├── tools/
-│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，718 项断言）
+│   ├── smoke-test.mjs                离线自测（最小 DOM / ST 桩，771 项断言）
 │   ├── patch-endpoint-test.mjs       日记端点 e2e（express 沙盒，可选）
 │   ├── patch-asset-test.mjs          资源端点 e2e（同上）
+│   ├── patch-wiscan-test.mjs         世界书扫描源补丁：纯 LF / 可应用 / 与其余三枚顺序无关（可 SKIP）
 │   └── check-filename.mjs            文件名合规校验器
 ├── examples/
 │   └── preset.example.json           参考预设（含日记卡片，可直接导入酒馆）

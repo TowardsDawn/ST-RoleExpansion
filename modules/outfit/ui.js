@@ -14,7 +14,7 @@
 
 export function createOutfitUi(kernel, rt) {
     // 框架注入（settings / ui 是长期同一个对象，不要缓存它们的字段快照）
-    const { collapsible, debounce, el, iconFor, section, settings, toast, updateSetting } = kernel;
+    const { checkboxRow, collapsible, debounce, el, iconFor, section, settings, toast, updateSetting } = kernel;
     // 同模块、别的文件：惰性转发（调用时才取，绕开文件创建顺序的循环依赖）
     const PARTS = rt.store.PARTS;
     const addCustomCategory = (...args) => rt.store.addCustomCategory(...args);
@@ -53,6 +53,15 @@ export function createOutfitUi(kernel, rt) {
     const probeStPatch = (...args) => rt.inject.probeStPatch(...args);
     const readOutfitCard = (...args) => rt.inject.readOutfitCard(...args);
     const supportsMarkerPromptCard = (...args) => rt.inject.supportsMarkerPromptCard(...args);
+    /**
+     * ST 侧是否有「世界书扫描源」（补丁 st-wi-scan-source，经 kernel.supportsWiScanSource() 转告）。
+     * 框架成员可能是旧的、自测的假 kernel 里也可能没有它，缺失一律按「不支持」处理；
+     * 界面据此把复选框禁用并写明原因，**绝不静默**（见 buildOutfitPanel()）。
+     */
+    const supportsWiScanSource = () => {
+        const fn = kernel.supportsWiScanSource;
+        return typeof fn === 'function' ? fn() === true : false;
+    };
 
 /** 面板里的 DOM 引用（面板每次重建都会换新，所以放在 rt.state 上） */
 function panelRefs() {
@@ -95,6 +104,21 @@ function buildOutfitPanel() {
     promptInput.value = String(settings.outfitInjectPrompt ?? '');
     promptInput.addEventListener('input', debounce(() => updateSetting('outfitInjectPrompt', promptInput.value), 400));
 
+    // 世界书扫描：与上面那份注入正文**同源**（模块里是同一个 getContent），只是外面多包一层开关 ——
+    // 关掉它只让衣装不参与世界书扫描，预设卡片照常注入（两个开关各管各的）。
+    const wiScanToggle = el('input', { type: 'checkbox' });
+    wiScanToggle.checked = settings.outfitWIScan === true;
+    wiScanToggle.addEventListener('change', () => updateSetting('outfitWIScan', wiScanToggle.checked));
+    // 补丁缺失时**说出来**：禁用 + 改 hint。静默禁用会让「世界书扫不到衣装」变成查不出的怪现象。
+    const wiScanSupported = supportsWiScanSource();
+    wiScanToggle.disabled = !wiScanSupported;
+    const wiScanRow = checkboxRow(wiScanToggle, '纳入世界书扫描', wiScanSupported
+        ? '把卡片正文同步喂给世界书扫描；需要 ST 侧 st-wi-scan-source 补丁；开了之后衣装里的词可能触发世界书条目'
+        : 'ST 补丁 st-wi-scan-source 未生效，此项不可用');
+    // 输入框的 id 由 checkboxRow 现生成（label 的 for 与它绑定，改它就点不动这一行了），
+    // 所以稳定 id 给外层这一行，供排查与自测定位。
+    wiScanRow.id = 'roleEx-outfit-wi-scan-row';
+
     const injectFold = collapsible('注入模板', { open: false });
     injectFold.root.setAttribute('id', 'roleEx-outfit-inject-fold');
     injectFold.body.append(
@@ -104,14 +128,19 @@ function buildOutfitPanel() {
                 + '这张卡片是否注入、落在什么位置，都由预设 UI 里的那张卡片决定。',
         }),
         promptInput,
+        wiScanRow,
     );
 
     // 正文的直接子节点顺序是契约：状态行 → 两栏 → 注入模板折叠块
     s.content.append(status, cols, injectFold.root);
 
-    rt.state.panel = { root: s.root, status, cols, preview, previewList, editor, promptInput, injectFold };
+    rt.state.panel = {
+        root: s.root, status, cols, preview, previewList, editor, promptInput, injectFold, wiScanToggle, wiScanRow,
+    };
     renderOutfit();
-    return { section: s, root: s.root, status, cols, preview, previewList, editor, promptInput, injectFold };
+    return {
+        section: s, root: s.root, status, cols, preview, previewList, editor, promptInput, injectFold, wiScanToggle, wiScanRow,
+    };
 }
 
 // ---------------------------------------------------------------------------

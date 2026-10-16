@@ -4,9 +4,10 @@
  * 与 modules/journal/inject.js 同一套「marker 卡片运行时正文源」（照搬改名）：
  *
  * 预设里由**用户自行**维护一张 marker: true 卡片（identifier = roleExpansionOutfit）；
- * 本扩展只做两件事：
+ * 本扩展只做三件事：
  *   1) 注册运行时正文源 —— ST 每次生成时调它取当前已选的衣装，填进那张卡片；
- *   2) 读取卡片在 prompt_order 里的 enabled —— 那是「是否注入」的唯一开关。
+ *   2) 读取卡片在 prompt_order 里的 enabled —— 那是「是否注入」的唯一开关；
+ *   3) 可选地把**同一份正文**登记成世界书扫描源（设置 outfitWIScan 打开，见下面的「世界书扫描源」一节）。
  *
  * 扩展**不创建 / 不修改 / 不移动**卡片，不写预设文件，也不往酒馆的扩展提示词通道塞东西
  * （注入完全由那张卡片负责），更不把「是否注入」缓存进 settings。
@@ -130,32 +131,82 @@ function ensureRuntimePromptSource() {
     if (runtimePromptRegistered && runtimeSourceForId === key) {
         return true;
     }
+    // 卡片正文（组装期）与扫描正文（扫描期）**共用这一份** getContent：
+    // 三道闸与正文拼装只有这一处实现，「世界书扫到的」与「卡片里注入的」永远同一份文本。
+    const getContent = () => {
+        // ① 卡片没插进任何 prompt_order 块 → 不注入（也就没有开关可谈）
+        const entry = findOutfitOrderEntry();
+        if (!entry) {
+            return '';
+        }
+        // ② 卡片自己关掉了 → 不注入
+        if (entry.enabled === false) {
+            return '';
+        }
+        // ③ 正文为空（一个衣装项都没选）→ 不注入
+        return buildOutfitInjectionText();
+    };
     try {
-        register(PRESET_PROMPT.ID, () => {
-            // ① 卡片没插进任何 prompt_order 块 → 不注入（也就没有开关可谈）
-            const entry = findOutfitOrderEntry();
-            if (!entry) {
-                return '';
-            }
-            // ② 卡片自己关掉了 → 不注入
-            if (entry.enabled === false) {
-                return '';
-            }
-            // ③ 正文为空（一个衣装项都没选）→ 不注入
-            return buildOutfitInjectionText();
-        }, {
+        register(PRESET_PROMPT.ID, getContent, {
             name: PRESET_PROMPT.SOURCE_NAME,
             edit: true,
             toggle: true,
         });
         runtimePromptRegistered = true;
         runtimeSourceForId = key;
+        // 卡片这条路先立起来，扫描是它的可选附加（登记失败也不影响上面那一步）
+        ensureWiScanSource(getContent);
         patchPromptManagerFirstRender();
         return true;
     } catch (e) {
         logError('registerRuntimePromptSource failed', e);
         return false;
     }
+}
+
+// --- 世界书扫描源（需要 ST 侧 st-wi-scan-source 补丁） -------------------------
+// 为什么必须另登记一份：世界书扫描（ST 的 checkWorldInfo()）在扫描开始时遍历 extensionPrompts，
+// 只挑 scan === true 的条目把正文塞进 haystack；卡片走的是「运行时正文源」，它**不在** extensionPrompts
+// 里，所以扫不到。而那一层 haystack 不受 scan depth 截断、在所有扫描轮次（含递归轮）都可见 ——
+// 「衣装里的词也能触发世界书条目」只能靠这里单独登记。
+//
+// ⚠️ 这里有两个互不相干的开关：卡片开关管「注入主聊天」，outfitWIScan 管「参与世界书扫描」。
+
+/** 世界书扫描源标识（刻意与卡片 identifier 同一个字符串：一个模块一个标识，排查时一眼对得上） */
+const WI_SCAN_SOURCE_ID = PRESET_PROMPT.ID;
+
+let wiScanRegistered = false;
+let wiScanSourceForId = '';
+
+/**
+ * 把卡片正文源登记成世界书扫描源。
+ *
+ * ★ 开关只包在**外面**这一层，绝不把 settings.outfitWIScan 读进 getContent 本体：
+ *   getContent 是两个通道共用的同一份，「关掉世界书扫描」不该顺带把预设卡片也变成没有正文
+ *   —— 那是两个功能，不能连坐。
+ *
+ * 幂等与失败处理沿用本文件既有写法（runtimePromptRegistered 那一对记忆变量、失败不抛、logError）：
+ * 只在运行时源注册成功之后登记一次；补丁缺失时 kernel.registerWiScanSource 返回 false
+ * （它自己 warn，不抛），这里**不报错、不重试** —— 没登记上本身可降级（大不了衣装不参与世界书扫描），
+ * 而「这一项不可用」由界面用 kernel.supportsWiScanSource() 明说，不静默。
+ *
+ * @param {() => string} getContent 卡片正文源（与组装期同一个函数）
+ * @returns {boolean} 是否登记成功
+ */
+function ensureWiScanSource(getContent) {
+    if (typeof kernel.registerWiScanSource !== 'function') {
+        // 旧版框架没有这个成员：按「不支持」处理，同样不抛（界面那侧照常给出禁用说明）
+        return false;
+    }
+    if (wiScanRegistered && wiScanSourceForId === WI_SCAN_SOURCE_ID) {
+        return true;
+    }
+    const ok = kernel.registerWiScanSource(WI_SCAN_SOURCE_ID, () => (settings.outfitWIScan ? getContent() : ''));
+    if (ok) {
+        wiScanRegistered = true;
+        wiScanSourceForId = WI_SCAN_SOURCE_ID;
+    }
+    return ok;
 }
 
 /**
@@ -400,7 +451,8 @@ function patchPromptManagerFirstRender() {
     return {
         PRESET_PROMPT,
         adoptCardStateFromPreset, buildOutfitInjectionText, currentPresetName, diagnoseOutfitCard,
-        ensureRuntimePromptSource, findOutfitOrderEntry, getPromptManager, isOutfitCardEnabledInPreset,
+        ensureRuntimePromptSource, ensureWiScanSource, findOutfitOrderEntry, getPromptManager,
+        isOutfitCardEnabledInPreset,
         isPromptManagerExposed, logMarkerSupport, patchPromptManagerFirstRender, probeCardControls,
         probeStPatch, promptManagerFirstRenderPatched, promptManagerRenderTimer, readOutfitCard,
         rerenderPromptManagerSoon, runtimePromptRegistered, runtimeSourceForId, runtimeSourceKey,

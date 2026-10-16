@@ -1,0 +1,81 @@
+diff --git a/public/scripts/st-context.js b/public/scripts/st-context.js
+index 190e69c..70a39c0 100644
+--- a/public/scripts/st-context.js
++++ b/public/scripts/st-context.js
+@@ -104,7 +104,7 @@ import { ToolManager } from './tool-calling.js';
+ import { accountStorage } from './util/AccountStorage.js';
+ import { timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
+ import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
+-import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, reloadEditor, saveWorldInfo, updateWorldInfoList, world_names } from './world-info.js';
++import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, registerWorldInfoScanSource, reloadEditor, saveWorldInfo, unregisterWorldInfoScanSource, updateWorldInfoList, world_names } from './world-info.js';
+ import { ChatCompletionService, TextCompletionService } from './custom-request.js';
+ import { ConnectionManagerRequestService } from './extensions/shared.js';
+ import { updateReasoningUI, parseReasoningFromString, getReasoningTemplateByName } from './reasoning.js';
+@@ -281,6 +281,8 @@ export function getContext() {
+         updateWorldInfoList,
+         convertCharacterBook,
+         getWorldInfoPrompt,
++        registerWorldInfoScanSource,
++        unregisterWorldInfoScanSource,
+         getWorldInfoNames: () => Array.isArray(world_names) ? [...world_names] : [],
+         CONNECT_API_MAP,
+         getTextGenServer,
+diff --git a/public/scripts/world-info.js b/public/scripts/world-info.js
+index 1941041..e500089 100644
+--- a/public/scripts/world-info.js
++++ b/public/scripts/world-info.js
+@@ -4697,6 +4697,36 @@ function parseDecorators(content) {
+     return [[], content];
+ }
+ 
++/**
++ * key -> () => string。扩展注册的「纳入世界书扫描」正文源。不占注入通道。
++ *
++ * 为什么单开这条通道：extensionPrompts 上的 scan 标志效果等价（同一层 haystack，
++ * 不受 scan depth 截断、所有扫描轮次都可见），但那条路要求扩展先注册一条注入，
++ * 于是正文会连带进入注入列表与深度排序。这里只登记正文源，扩展不必借道注入。
++ */
++const extensionScanSources = new Map();
++
++/**
++ * 注册一个扫描正文源。重复注册同一个 key 即覆盖（Map 语义）。
++ * @param {string} key 唯一标识，通常用扩展名
++ * @param {() => string} getText 取正文；正文为空则整条跳过
++ * @returns {void}
++ */
++export function registerWorldInfoScanSource(key, getText) {
++    if (!key || typeof getText !== 'function') return;
++    extensionScanSources.set(String(key), getText);
++}
++
++/**
++ * 注销扫描正文源。
++ * @param {string} key 注册时用的 key
++ * @returns {void}
++ */
++export function unregisterWorldInfoScanSource(key) {
++    if (!key) return;
++    extensionScanSources.delete(String(key));
++}
++
+ /**
+  * Performs a scan on the chat and returns the world info activated.
+  * @param {string[]} chat The chat messages to scan, in reverse order.
+@@ -4724,6 +4754,17 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData
+             }
+         }
+     }
++    // 与上面 extensionPrompts 的 scan 标志等价：同样进这一层 haystack（不受 scan depth
++    // 截断、所有扫描轮次可见），但不经过任何注入通道。正文为空则不加；单个源取正文
++    // 时抛错只记日志，绝不中断世界书扫描。
++    for (const [key, getText] of extensionScanSources) {
++        try {
++            const text = getText();
++            if (text) buffer.addInject(text);
++        } catch (error) {
++            console.error(`[WI] Extension scan source "${key}" failed`, error);
++        }
++    }
+ 
+     /** @type {scan_state} */
+     let scanState = scan_state.INITIAL;

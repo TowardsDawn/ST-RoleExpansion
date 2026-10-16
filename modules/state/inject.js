@@ -26,23 +26,48 @@ function buildStateText() {
     return list.map(item => `${item.name} ${item.value}`).join('\n');
 }
 
+/**
+ * 状态文本的**唯一**来源：注入槽与下面的「世界书扫描源」都取这一份 ——
+ * 两处各拼一遍，迟早会因为改了一处而走样。
+ *
+ * 三道闸（总开关 / 注入开关 / 列表非空）在这里统一判：不满足就返回 ''，
+ * 对注入侧的含义是「清空旧值」，对扫描侧的含义是「这段不贡献内容」。
+ *
+ * @returns {string}
+ */
+function buildStateInjectionText() {
+    const list = getStateList();
+    if (!settings.stateEnabled || !settings.stateAutoInject || !list.length) {
+        return '';
+    }
+    return renderTemplateString(settings.stateInjectPrompt, { stateList: buildStateText() });
+}
+
 function applyStateInjection() {
     const c = ctx();
     if (typeof c?.setExtensionPrompt !== 'function') {
         return;
     }
-    const list = getStateList();
-    if (!settings.stateEnabled || !settings.stateAutoInject || !list.length) {
+    const text = buildStateInjectionText();
+    // 空文本 = 上面三道闸没过（或模板被清空）→ 走清空路径，别让面板上留着上一次的状态内容。
+    // 第 5 个参数保持 false：扫描源喂的是同一份文本，这里再标 scan 会让同一段正文在 haystack 里出现两次。
+    if (!text) {
         c.setExtensionPrompt(EXT_PROMPT_KEY.STATE, '', EXT_POSITION_IN_CHAT, 0, false, EXT_ROLE_SYSTEM);
         return;
     }
-    const text = renderTemplateString(settings.stateInjectPrompt, { stateList: buildStateText() });
     const role = settings.stateInjectRole === 'assistant'
         ? EXT_ROLE_ASSISTANT
         : (settings.stateInjectRole === 'user' ? 1 : EXT_ROLE_SYSTEM);
     const depth = Number.isFinite(Number(settings.stateInjectDepth)) ? Math.max(0, Math.trunc(Number(settings.stateInjectDepth))) : 0;
     c.setExtensionPrompt(EXT_PROMPT_KEY.STATE, text, EXT_POSITION_IN_CHAT, depth, false, role);
 }
+
+// 世界书扫描源：与注入**同源**（同一个 buildStateInjectionText()），但走的是另一条通道 ——
+// ST 扫描时会把 scan=true 条目的正文塞进 haystack，那层不受 scan depth 截断、在所有扫描轮次都可见。
+// 这里只在模块求值（工厂执行）时登记一次，不重试、不轮询：
+// kernel.registerWiScanSource 对「补丁缺失 / 登记抛错」返回 false 而不抛；
+// 且 getText 是每次扫描时才求值，所以补丁晚一步生效、用户中途改开关都能立刻反映。
+kernel.registerWiScanSource('roleExpansionState', () => (settings.stateWIScan ? buildStateInjectionText() : ''));
 
 // 状态栏：解析 AI 回复中的 <名称>值</名称> 标签
 // ============================================================================
@@ -167,5 +192,5 @@ function onCharacterMessageReceived() {
     applyStateInjection();
 }
 
-    return { applyStateInjection, buildStateText, isStateTagName, onCharacterMessageReceived, parseAndStripStateTags };
+    return { applyStateInjection, buildStateInjectionText, buildStateText, isStateTagName, onCharacterMessageReceived, parseAndStripStateTags };
 }

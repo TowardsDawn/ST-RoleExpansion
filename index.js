@@ -672,6 +672,43 @@ async function probeAssetStorage(sub) {
         ? { ok: true, reason: null, text: '资源存储可用：' + assetPathText(sub, probeName) }
         : { ok: false, reason: res.reason, text: assetReasonText(res.reason) };
 }
+
+// ============================================================================
+// 世界书扫描源（需要 ST 侧 st-wi-scan-source 补丁）
+// ============================================================================
+// 补丁会给 getContext() 挂 registerWorldInfoScanSource(key, getText)：模块把待扫描文本登记进去，
+// 世界书扫描时连带扫它。这里只做「转调 + 缺失兜底」，不缓存结果 —— 补丁可能在本插件之后才生效，
+// 缓存会把「晚一步打上补丁」永久判死。
+
+/**
+ * 登记一个世界书扫描源。
+ * 补丁缺失时**返回 false 而不抛**：调用方基本都在模块初始化路径上，抛出去会连累整个模块起不来，
+ * 而「没登记上」本身是可降级的（大不了这部分文本不被世界书扫到）；同时必须 warn 一次，
+ * 静默失败会让「世界书扫不到我的文本」变成一个查不出来的怪现象。
+ * @param {string} id 扫描源标识（由模块保证唯一）
+ * @param {() => string} getText 返回待扫描文本
+ * @returns {boolean} 是否登记成功
+ */
+function registerWiScanSource(id, getText) {
+    const register = ctx()?.registerWorldInfoScanSource;
+    if (typeof register !== 'function') {
+        console.warn(`[${MODULE_NAME}] ST 侧 st-wi-scan-source 补丁未生效，${id} 不参与世界书扫描`);
+        return false;
+    }
+    try {
+        register(String(id), getText);
+        return true;
+    } catch (e) {
+        logError('registerWiScanSource failed', e);
+        return false;
+    }
+}
+
+/** ST 是否已支持世界书扫描源（模块据此决定要不要给用户提示补丁） */
+function supportsWiScanSource() {
+    return typeof ctx()?.registerWorldInfoScanSource === 'function';
+}
+
 // 日记 / 状态 运行时状态
 // ============================================================================
 
@@ -1605,6 +1642,8 @@ const kernel = {
     // 模块私有资源存储（走 /api/role-expansion/asset，需要 st-twitter-assets 补丁）
     assetReasonText, assetPathText, readAssetText, readAssetBinary, writeAssetText, writeAssetBinary,
     deleteAssetFile, probeAssetStorage,
+    // 世界书扫描源（需要 ST 侧 st-wi-scan-source 补丁；缺补丁时 registerWiScanSource 返回 false 不抛）
+    registerWiScanSource, supportsWiScanSource,
     // 模块系统
     service,
 };
@@ -1829,6 +1868,9 @@ globalThis.roleExpansion = {
     /** 模块私有资源：位置文案与只读探针（排查头像/横幅写不进去） */
     assetPathText,
     probeAssetStorage,
+    /** 世界书扫描源：ST 补丁是否生效 / 手动登记一个源（排查「世界书扫不到我的文本」的第一步） */
+    supportsWiScanSource,
+    registerWiScanSource,
     /** 推特模块（模块不在时是空壳） */
     reloadTwitter,
     renderTwitter,

@@ -529,14 +529,14 @@ doc.querySelectorAll('video').forEach(video => video.addEventListener('play', ()
 
 - 端点在**框架**：`ASSET_ENDPOINT = '/api/role-expansion/asset'`，`POST /{get,save,delete}`，
   body = `{ avatar_url, sub, name, text | base64 }`，请求头走 `ctx().getRequestHeaders()`。
-- 位置：`<user>/chats/<角色目录>/_RoleExpansion/<sub>/<name>`；`sub` 的服务端白名单目前**只有 `'twitter'`**。
+- 位置：`<user>/chats/<角色目录>/_RoleExpansion/<sub>/<name>`；`sub` 的服务端白名单是 `['twitter', 'outfit']`（推特用 `'twitter'`，衣装用 `'outfit'`）。
 - 服务端校验（`patches/st-twitter-assets.patch` 新增的 `src/endpoints/role-expansion-assets.js`，纯新增 + `server-startup.js` 挂一行）：
   单段 ASCII 文件名（`^[a-zA-Z0-9_\-.]+$`）、扩展名白名单 `.jsonl/.png/.jpg/.jpeg/.webp/.gif`、
   `isPathUnderParent` 双保险、`write-file-atomic` 原子写、文本上限 16MB / 二进制解码后 8MB。
   **改服务端的那份补丁要重启酒馆主进程。**
 - ⚠️ **补丁有顺序**：`st-twitter-assets.patch` 的 `src/server-startup.js` 两个 hunk 锚定的是
   `st-journal-store.patch` 加进去的 `roleExpansionRouter` 那两行，所以必须**打在 `st-journal-store` 之后**
-  （三份补丁的顺序：`st-marker-prompt` → `st-journal-store` → `st-twitter-assets`）。
+  （这三枚补丁的顺序：`st-marker-prompt` → `st-journal-store` → `st-twitter-assets`，不能反；`st-wi-scan-source` 与它们无关）。
 - 可用性判定复用日记那套：`assetRequest()` 第一件事就是 `journalAvailability()` —— **群聊 / 没选角色在本地就判掉，连请求都不发**。
 - 框架侧的 `probeAssetStorage(sub)` 只读一个必然不存在的探针名（`RoleExpansion_probe.jsonl`）；
   推特模块**没有**调用它，排查时手动 `roleExpansion.probeAssetStorage('twitter')`。

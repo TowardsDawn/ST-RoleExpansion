@@ -12,10 +12,10 @@
 | --- | --- |
 | 是什么 | SillyTavern 前端扩展：**衣装打扮（Outfit）** + **角色状态栏（State）** + **日记（Journal）** + **推特（Twitter）** |
 | 形态 | 纯前端原生 ESM，**没有任何构建步骤** —— `index.js` 由酒馆直接 `import`；四个功能都是 `modules/` 下的**可拆模块**（§1.1） |
-| 代码规模 | 框架 `index.js` ≈ 1863 行；模块 ≈ 7179 行（outfit 2429 / twitter 2297 / journal 1837 / state 616）、`style.css` ≈ 960 行、`index.html` 52 行 —— 都是 `(Get-Content <文件>).Count` 的实测值（含空行与注释） |
-| 运行前提 | SillyTavern ≥ 1.18.0（**1.19.0 已复验**，补丁能干净落地）**且**已应用 `patches/` 下的三份补丁（`st-marker-prompt` → `st-journal-store` → `st-twitter-assets`，顺序不能反） |
+| 代码规模 | 框架 `index.js` ≈ 1905 行；模块 ≈ 7305 行（outfit 2513 / twitter 2297 / journal 1837 / state 658）、`style.css` ≈ 961 行、`index.html` 52 行 —— 都是 `(Get-Content <文件>).Count` 的实测值（含空行与注释） |
+| 运行前提 | SillyTavern ≥ 1.18.0（**1.18.0 与 1.19.0 的纯净检出都已复验**，四枚补丁都能干净落地）**且**已应用 `patches/` 下的四份补丁（`st-marker-prompt` → `st-journal-store` → `st-twitter-assets` 这三枚顺序不能反；`st-wi-scan-source` 只碰 `public/scripts/`，与它们互不干扰） |
 | 后端 | 无自有后端。持久化 = `chatMetadata`（状态） + 补丁新增的 `/api/role-expansion/journal/*`（日记 jsonl）与 `/api/role-expansion/asset/*`（模块私有子目录：推特 jsonl + 头像 / 横幅 / 本地配图、衣装 jsonl；URL 媒体只存地址，不落盘） |
-| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 718 项断言）；`npm run test:patch` 另跑两份补丁端点 |
+| 自测 | `npm test` → `tools/smoke-test.mjs`，纯 Node、不需要浏览器（当前 771 项断言）；`npm run test:patch` 另跑三份补丁自测（26 / 42 / 92 项） |
 
 接手时最该先搞明白的三件事：
 
@@ -42,9 +42,11 @@
 | `patches/st-marker-prompt.patch` | 给酒馆打的最小补丁：运行时提示词源 + marker 卡片权限（3 个文件、12 个 hunk） | ⚠️ 需手动应用 |
 | `patches/st-journal-store.patch` | 给酒馆打的最小补丁：日记文件读写端点（新增 1 个文件 + 挂载 1 行） | ⚠️ 需手动应用，**改服务端要重启酒馆** |
 | `patches/st-twitter-assets.patch` | 给酒馆打的最小补丁：模块私有资源读写端点（新增 1 个文件 + 挂载 1 行；子目录白名单 `['twitter', 'outfit']`） | ⚠️ 同上，且**必须打在 `st-journal-store` 之后** |
+| `patches/st-wi-scan-source.patch` | 给酒馆打的最小补丁：世界书扫描源注册表（2 个前端文件，只在 `checkWorldInfo()` 里加一个循环） | ⚠️ 需手动应用，只碰 `public/scripts/`，**不用重启酒馆**，`Ctrl+F5` 即可 |
 | `tools/smoke-test.mjs` | 离线自测：stub DOM + ST 桩 → 加载真 `index.js` | — |
 | `tools/patch-endpoint-test.mjs` | 日记端点 e2e：从 patch 抽出端点在 express 沙盒里真跑（可 SKIP） | — |
 | `tools/patch-asset-test.mjs` | 资源端点 e2e：读写删 / 覆盖 / 白名单 / 穿越 / 体积上限 | — |
+| `tools/patch-wiscan-test.mjs` | 世界书扫描源补丁 e2e：纯 LF / 可独立应用 / 与其余三枚顺序无关 | — |
 | `tools/check-filename.mjs` | 单文件排查酒馆的文件名校验 | — |
 | `examples/preset.example.json` | 示例预设（含 marker 卡片），自测会校验一致性 | — |
 | `README.md` / `CHANGELOG.md` | 用户文档 / 版本记录 | — |
@@ -190,6 +192,7 @@ function ctx() {
 | `setExtensionPrompt()` | 状态注入 |
 | `registerRuntimePromptSource()` | 日记与衣装注入（**补丁新增**） |
 | `promptManager`（getter） | 读预设卡片状态（**补丁新增**） |
+| `registerWorldInfoScanSource()` | 把模块正文登记成世界书扫描源（**补丁新增**；扩展侧包装成 `kernel.registerWiScanSource()`，补丁缺失时返回 `false` 不抛） |
 | `renderExtensionTemplateAsync()` | 渲染 `index.html` |
 | `saveSettingsDebounced` / `saveMetadata` | 持久化（设置落 `settings.json`；状态模块用它把 `chatMetadata` 写回会话） |
 
@@ -228,7 +231,7 @@ function ctx() {
 > 并进 `kernel`；当前消费方是推特模块（自己的 jsonl + `avatar.png` + `banner.jpg` + 每条推文的**本地**配图 `tweet-<id>.<ext>`）
 > 与衣装模块（自己的 jsonl，`sub = 'outfit'`）。
 > URL 媒体（`mediaUrl`）只把地址写进 jsonl，**不经过这条通道、也不落盘**。
-> 三个补丁的执行顺序是 marker → journal → twitter-assets。
+> 三个补丁的执行顺序是 marker → journal → twitter-assets（这三枚不能反）；`st-wi-scan-source` 与它们无关。
 >
 > ⚠️ **白名单那一行是 0.10.0 从 `['twitter']` 改成 `['twitter', 'outfit']` 的**（同行替换、不增删行，
 > 所以补丁的净新增行数不变）。**已经装过旧版的人不能重新 `git apply` 这份补丁**
@@ -236,11 +239,24 @@ function ctx() {
 > 正确做法是手动把 `<酒馆>/src/endpoints/role-expansion-assets.js` 里那一行改成 `['twitter', 'outfit']`，
 > 然后**重启酒馆主进程**。
 
+`patches/st-wi-scan-source.patch`（同样只做新增，而且**只碰前端** —— 与前三枚互不干扰，放最前或最后都行；**不用重启酒馆**）：
+
+| 文件 | 改什么 | 为什么扩展自己做不到 |
+| --- | --- | --- |
+| `world-info.js` | 模块级 `extensionScanSources` Map + `registerWorldInfoScanSource(key, getText)` / `unregisterWorldInfoScanSource(key)`；`checkWorldInfo()` 里在原有 `extensionPrompts` 循环**之后**把每个源的正文 `buffer.addInject()` 进 haystack（源取正文抛错只记一条 `console.error`，不中断扫描） | 扫描只认 `extensionPrompts` 里 `scan=true` 的条目，而扩展的运行时正文源不在那张表里；扩展也无法在「扫描那一刻」往 haystack 里塞文本 |
+| `st-context.js` | 把这两个函数挂进 `getContext()` | 挂不上就调不到 |
+
+> 框架侧包成 `kernel.registerWiScanSource(id, getText)`（补丁缺失 → `console.warn` 后返回 `false`，**不抛**）
+> 与 `kernel.supportsWiScanSource()`；当前消费方是状态栏（id `roleExpansionState`）与衣装（id `roleExpansionOutfit`），
+> 由各自面板的「纳入世界书扫描」开关控制（默认关）。正文**永远是扫描那一刻现取**，所以补丁晚生效、用户中途改设置都能立刻反映。
+> 细节见 `modules/state/DEVELOPMENT.md` §5.1 与 `modules/outfit/DEVELOPMENT.md` §5.6。
+
 **不打补丁的降级行为**（不会崩，但功能残）：
 
 - 日记与衣装的注入链断掉（`runtimeSources` 里没有我们的条目；衣装那张卡片会**没有正文**）
 - 面板上的卡片状态提示显示「补丁不完整」
 - `logMarkerSupport()` / `diagnoseJournalCard()` 会在控制台打出具体缺哪一处
+- 缺 `st-wi-scan-source.patch` 时，状态栏与衣装的「纳入世界书扫描」勾选框是**灰的**、hint 直接写明缺哪枚补丁（不静默）；其余功能完全不受影响（该补丁只影响扫描，不影响注入）
 - 缺服务端补丁的三个模块会**明确报出来**（都不会静默）：日记面板红字点出 `st-journal-store.patch`、
   推特面板红字点出 `st-twitter-assets.patch`（缺补丁时推特的仿推特页面整块隐藏，资料区照旧能打字但写不进去）、
   衣装面板红字点出 `st-twitter-assets.patch`（两栏整块置灰 `pointer-events: none`，连 `编辑` 都点不动，
@@ -287,12 +303,13 @@ function ctx() {
 
 ## 3. 数据流总览
 
-框架本身不产生内容，它只提供两条公共通道，模块自己往里接：
+框架本身不产生内容，它只提供三条公共通道，模块自己往里接：
 
 | 通道 | 框架提供什么 | 谁在用 |
 | --- | --- | --- |
 | **提示词注入** | `setExtensionPrompt()` 的包装 ｜ 运行时提示词源（`registerRuntimePromptSource()`，由 marker 补丁提供） | 状态模块 ｜ 日记模块与衣装模块（推特模块**不注入**任何提示词） |
 | **持久化** | `chatMetadata`（随聊天走）｜ 补丁端点 `/api/role-expansion/journal/*`（角色聊天目录下的文本）｜ 补丁端点 `/api/role-expansion/asset/*`（模块私有子目录，文本 + 图片） | 状态模块 ｜ 日记模块 ｜ 推特模块与衣装模块（后者只用文本那一半） |
+| **世界书扫描** | `registerWiScanSource()`（补丁新增：登记一份「扫描那一刻现取」的正文，不经过任何注入通道） | 状态模块与衣装模块**可选**（各自面板的开关控制，默认关；推特与日记不参与） |
 
 每个模块自己的完整数据流、状态机与内部约定，写在 `modules/<id>/DEVELOPMENT.md`：
 [`outfit`](modules/outfit/DEVELOPMENT.md) ｜ [`state`](modules/state/DEVELOPMENT.md) ｜
@@ -574,11 +591,11 @@ write-file-atomic），找不到就打 `SKIP` 退出 0，所以 CI 上不跑也�
 改动之后，按这个顺序过一遍：
 
 - [ ] `node --check index.js` —— 语法
-- [ ] `npm test` —— 断言数是否还是 718（或你确实改过断言数；这个数字同时写在 `.github/workflows/smoke-test.yml` 的注释里，改了要一起同步）；改了补丁端点再跑一次 `npm run test:patch`
+- [ ] `npm test` —— 断言数是否还是 771（或你确实改过断言数；这个数字同时写在 `.github/workflows/smoke-test.yml` 的注释里，改了要一起同步）；改了补丁端点再跑一次 `npm run test:patch`
 - [ ] 动了模块系统：把 `modules/<id>/` 挪走再跑一次 `npm test`（框架部分应当照常，模块相关断言会红），
       并在酒馆里确认「面板少一块 + 别的功能照常 + 控制台只多一行 info」
 - [ ] 涉及 UI 的改动：`Ctrl+F5` 后在酒馆里实际点一遍（自测的 DOM 是 stub，覆盖不到视觉）
-- [ ] 涉及补丁的改动：确认三份补丁（`st-marker-prompt` / `st-journal-store` / `st-twitter-assets`）都能 `git apply --check`，
-      且后两份的执行顺序没反
+- [ ] 涉及补丁的改动：确认四份补丁（`st-marker-prompt` / `st-journal-store` / `st-twitter-assets` / `st-wi-scan-source`）都能 `git apply --check`，
+      且 `st-journal-store` 在 `st-twitter-assets` 之前（`st-wi-scan-source` 与它们顺序无关）
 - [ ] 版本号 4 处是否一致
 - [ ] `git status` —— 有没有忘了提交的改动
