@@ -2,7 +2,7 @@
 
 **一套持续完善的模块化、可扩展的ST扩展插件**
 
-![version](https://img.shields.io/badge/version-0.12.0-blue)
+![version](https://img.shields.io/badge/version-0.12.1-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![SillyTavern](https://img.shields.io/badge/SillyTavern-%E2%89%A5%201.18.0-8A2BE2)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)

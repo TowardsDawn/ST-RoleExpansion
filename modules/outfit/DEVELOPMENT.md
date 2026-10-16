@@ -461,14 +461,14 @@ buildOutfitList():                       // store.js，注入正文的「内容�
           // 散装选中项在前、套装 items 在后，整体去重保序（mergeLooseAndSuit）
           tags = mergeLooseAndSuit(selection[cat.key], suit?.items?.[cat.key]);
           if (!tags.length) continue;    // 空分类不出现
-          chunks.push(cat.name + '=' + tags.join(' / '));
+          chunks.push(cat.name + '=' + tags.join('、'));
       }
       if (chunks.length) lines.push(part.label + '：' + chunks.join('；'));
   }
   return lines.join('\n');               // 一个都没有 = ''
 ```
 
-- 行内多个分类用 `；`，同一个分类里的多个 tag 用 ` / `；**空的部分整行不出现**。
+- 行内多个分类用 `；`，同一个分类里的多个 tag 用 `、`；**空的部分整行不出现**。
 - **`套装=<名>` 只有该组真的选中了套装才写**（没选就整段不出现，不会出现 `套装=` 空值）；
   分类里的值 = **散装在前、套装项在后、整体去重** —— 这就是「装了套装时各分类位置照常显示其元素」。
 - 模板那一半在 `index.js` 的 `defaults.outfitInjectPrompt` 里，由
@@ -905,7 +905,8 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
   `.roleEx-outfit-cat-name` 与 `.roleEx-outfit-preview-name` 都是 `flex: 0 0 13em`
   （自测读的是 `style.css` 文本，值逐字比对）；
   **预览的多一行**：outer / inner 组的第一行是 `套装：`（`#roleEx-outfit-preview-list` 里），
-  未选时值是「未选」且带 `.is-empty`；分类行的值 = 散装 + 套装项去重后的合并
+  未选时值是「未选」且带 `.is-empty`；分类行的值 = 散装 + 套装项去重后的合并，多个 tag 用 `、` 连接
+  （注入正文同一合并规则、同一分隔符；分类之间是 `；`）
 - **分类编辑弹窗（0.10.1 / 0.11.0）**：点 `编辑` 后 `document.body` 下出现 `.roleEx-modal#roleEx-outfit-modal`，
   里面依次是 `.roleEx-modal-head`（`编辑「<分类名>」` + 右上角 `i.fa-solid.fa-xmark.menu_button.roleEx-btn-xs`）、
   `.roleEx-outfit-modal-field`（名称，**只有自定义分类才有**）、
@@ -942,7 +943,7 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
   手改的 id 不合规 / 同组重复 → 现场换新 id 而**条目保留**；不同 part 允许同名 id；
   `picked[part]` 指向不存在的套装 → 置 `''`；编码器落盘前会再跑一次 `normalizeSuits()`
 - **注入（0.11.0）**：选中套装时该组行首是 `套装=<名>`（没选则整段不出现）；
-  分类值 = 散装在前 + 套装项在后 + 去重；示例口径 `外：套装=通勤装；头饰=贝雷帽；上衣=大衣 / 白衬衫；鞋子=帆布鞋`
+  分类值 = 散装在前 + 套装项在后 + 去重；示例口径 `外：套装=通勤装；头饰=贝雷帽；上衣=大衣、白衬衫；鞋子=帆布鞋`
 - **芯片选中态（0.10.1）**：CSS 规则里 `.roleEx-outfit-chip.is-on` 是
   `color: var(--SmartThemeQuoteColor, #e0b000)` + `border-color: currentColor` + `background-color: var(--black30a)`
   （**背景与未选态一致**，断言不会把 `.is-on` 当成实底高亮）
@@ -958,7 +959,7 @@ rt.state.foldOpen = { outer: false, inner: false, other: false };
 - **归一化**：固定分类补齐；未知固定 key 丢掉；`picked` 里不在 catalog 里的 key 与不在备选表里的 tag 丢掉；
   坏行被计数并给出「已跳过 N 行」提示
 - **注入**：`{{outfitList}}` 被填进模板；分组清单是「每部分一行、选中套装时行首先 `套装=<名>`、
-  各 `分类名=a / b` 用 `；` 连接、空部分整行不出现」；
+  各 `分类名=a、b` 用 `；` 连接、空部分整行不出现」；
   一个都没选 → 空串；三道闸各自生效（没插进 order / `enabled === false` / 没选）
 - **不可用路径**：
   - 群聊 → `reason = 'group'` + 红字 + **不发任何资源请求**；没选角色 → 状态行**不带** `roleEx-warn`；

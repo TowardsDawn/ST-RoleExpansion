@@ -2884,9 +2884,9 @@ api.renderOutfit();
 const ofMergedRows = ofPreviewRows(ofNew(ofPreviewBox, ofPMerged));
 const ofMergedVal = (label) => ofMergedRows.find(r => r.children?.[0]?.textContent === label + '：')?.children?.[1]?.textContent;
 check('预览：外组第一行是套装行（套装：通勤装改）', ofMergedVal('套装'), '通勤装改');
-check('预览：分类行 = 散装在前 + 套装项在后、整体去重（鞋子：短靴 / 雨靴）', ofMergedVal('鞋子'), '短靴 / 雨靴');
-check('预览：套装 items 进了各自分类（头饰：贝雷帽、上衣：大衣 / 白衬衫）',
-    [ofMergedVal('头饰'), ofMergedVal('上衣')].join('|'), '贝雷帽|大衣 / 白衬衫');
+check('预览：分类行 = 散装在前 + 套装项在后、整体去重（鞋子：短靴、雨靴）', ofMergedVal('鞋子'), '短靴、雨靴');
+check('预览：套装 items 进了各自分类（头饰：贝雷帽；上衣：大衣、白衬衫）',
+    [ofMergedVal('头饰'), ofMergedVal('上衣')].join('|'), '贝雷帽|大衣、白衬衫');
 const ofUnpickedSuitRows = ofMergedRows.filter(r => String(r.children?.[0]?.textContent) === '套装：'
     && String(r.children?.[1]?.textContent) === '未选');
 check('预览：内组没选套装 → 它的套装行「未选」+ is-empty',
@@ -2899,7 +2899,7 @@ ofDummyOrder.push({ identifier: 'roleExpansionOutfit', enabled: true });
 const ofSuitInject = ofSource();
 check('注入正文的外组整行（套装打头、分类按清单顺序、散装在前、整体去重）',
     ofSuitInject.split('\n').find(l => l.startsWith('外：')),
-    '外：套装=通勤装改；头饰=贝雷帽；上衣=大衣 / 白衬衫；鞋子=短靴 / 雨靴');
+    '外：套装=通勤装改；头饰=贝雷帽；上衣=大衣、白衬衫；鞋子=短靴、雨靴');
 check('内组既没选套装也没选散装 → 整行不出现', ofSuitInject.includes('内：'), false);
 ofDummyOrder.splice(ofDummyOrder.findIndex(e => e.identifier === 'roleExpansionOutfit'), 1);
 

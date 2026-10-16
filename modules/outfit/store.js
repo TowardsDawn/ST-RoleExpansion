@@ -827,7 +827,7 @@ function mergeLooseAndSuit(loose, suitItems) {
 /**
  * 注入用的正文（**不含** index.js 里那个模板）：
  * 每部分一行，行内以 `套装=<该组已选套装名>` 打头（**只有该组真的选中了套装才写这一段**，
- * 没选就整段不出现），随后是各分类 `分类名=tag1 / tag2`，分类之间用 `；`；
+ * 没选就整段不出现），随后是各分类 `分类名=tag1、tag2`，分类之间用 `；`；
  * 某个分类的值 = 散装选中项 + 该组套装在这个分类里的 items（散装在前、套装项在后，整体去重保序）；
  * 空分类跳过；空的部分整行不出现；一个内容都没有时返回空串。
  */
@@ -848,7 +848,7 @@ function buildOutfitList() {
             if (!tags.length) {
                 continue;
             }
-            chunks.push(cat.name + '=' + tags.join(' / '));
+            chunks.push(cat.name + '=' + tags.join('、'));
         }
         if (chunks.length) {
             lines.push(part.label + '：' + chunks.join('；'));
