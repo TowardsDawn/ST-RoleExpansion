@@ -212,7 +212,7 @@ function renderPreview() {
                 el('span', { class: 'roleEx-outfit-preview-name', text: cat.name + '：' }),
                 el('span', {
                     class: 'roleEx-outfit-preview-value' + (empty ? ' is-empty' : ''),
-                    text: empty ? '未选' : tags.join(' / '),
+                    text: empty ? '未选' : tags.join('、'),
                 }),
             ]));
         }
